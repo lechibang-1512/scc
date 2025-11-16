@@ -1,0 +1,32 @@
+# Ignore compiled C++ objects and executables
+*.o
+*.obj
+*.exe
+*.out
+a.out
+*.so
+*.dll
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+*.log
+
+# Build / temp
+build/
+dist/
+*.tmp
+
+# Executables created by the editor (e.g., a.out)
+# Specific executable names/patterns you want to ignore can be added here
+a.out
+*.out
+*.exe
