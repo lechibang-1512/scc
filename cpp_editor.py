@@ -1,26 +1,12 @@
 #!/usr/bin/env python3
-"""
-A lightweight C++ editor/compile-run app in Python (Tkinter)
-
-Features:
-- New/Open/Save/Save As
-- Basic syntax highlighting for C++
-- Line numbers
-- Compile (g++) with captured compiler errors
-- Run compiled executable (capture stdout/stderr)
-- Compile & Run flow
-"""
 import os
 import re
 from typing import Optional
-import shlex
 import subprocess
-import tempfile
 import threading
-import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from tkinter import ttk
+# no combobox, C++ only suggestion/highlighting
 
 
 class CppEditorApp:
@@ -37,6 +23,14 @@ class CppEditorApp:
         self.current_process: Optional[subprocess.Popen] = None
         # track if editor buffer is modified (unsaved changes)
         self.dirty = False
+        # autocomplete/suggestion timers and UI
+        self.autocomplete_timer = None
+        self.diagnostic_timer = None
+        # Use the module-level Optional to keep typing style consistent
+        self.suggest_box: Optional[tk.Toplevel] = None
+        self.suggest_list: Optional[tk.Listbox] = None
+        self.suggest_start: Optional[str] = None
+        self.suggest_end: Optional[str] = None
         self.set_text(self.default_cpp())
         self.update_highlight()
 
@@ -84,12 +78,7 @@ class CppEditorApp:
         btn_stop = tk.Button(side_frame, text='Stop', command=self.stop_current_process)
         btn_stop.pack(side='left', padx=6, pady=6)
 
-        # language selector for highlighting
-        lang_label = tk.Label(side_frame, text='Highlight:')
-        lang_label.pack(side='left', padx=(12, 4))
-        self.lang_var = tk.StringVar(value='cpp')
-        self.lang_combo = ttk.Combobox(side_frame, values=['cpp', 'c', 'python', 'java', 'javascript'], width=10, textvariable=self.lang_var)
-        self.lang_combo.pack(side='left')
+        # C++ only highlighting (no language selector)
 
         self.status_var = tk.StringVar()
         self.status_var.set('Ready')
@@ -124,11 +113,14 @@ class CppEditorApp:
             self.text.tag_configure('comment', foreground='#888')
 
     def _bind_events(self):
-        self.text.bind('<KeyRelease>', lambda e: (self.set_dirty(True), self.update_highlight()))
+        # Bind key events to set dirty flag, update highlights, and show suggestions
+        self.text.bind('<KeyRelease>', self._on_key_release)
+        self.text.bind('<Tab>', self._on_tab)
+        self.text.bind('<FocusOut>', lambda e: self._hide_suggestions())
         self.text.bind('<Button-1>', lambda e: self.update_line_numbers())
         self.text.bind('<MouseWheel>', lambda e: self.update_line_numbers())
         self.text.bind('<Return>', lambda e: self.update_line_numbers())
-        self.lang_combo.bind('<<ComboboxSelected>>', lambda e: self.update_highlight())
+        # No language combobox: always use C++ highlighting
 
         # Bind close event to check for unsaved changes
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
@@ -178,6 +170,7 @@ int main() {
                 self.set_text(f.read())
             self.current_file = path
             self.status_var.set(f'Opened {os.path.basename(path)}')
+            self.set_dirty(False)
 
     def save_file(self):
         if self.current_file is None:
@@ -219,13 +212,13 @@ int main() {
     def update_highlight(self):
         if self.highlight_timer:
             self.root.after_cancel(self.highlight_timer)
-        self.highlight_timer = self.root.after(150, self._highlight)
+        self.highlight_timer = self.root.after(80, self._highlight)
 
     def _highlight(self):
         # Use external Pygments-based SyntaxHighlighter if available
         if self.highlighter:
             # make sure prior tags are cleared by highlighter
-            lang = getattr(self, 'lang_var', None) and self.lang_var.get() or 'cpp'
+            lang = 'cpp'
             try:
                 # Prefer highlighting visible region for performance
                 self.highlighter.highlight_visible_region(language=lang)
@@ -315,7 +308,11 @@ int main() {
                 start = f'{line}.0'
                 end = f'{line}.0 + 1 line'
                 self.text.tag_add('error_line', start, end)
-
+                # Make sure to scroll to the first error
+                try:
+                    self.text.see(start)
+                except Exception:
+                    pass
 
     def run_program(self):
         if self.current_file is None:
@@ -423,6 +420,324 @@ int main() {
             ret = 0
         self.status_var.set(f'Execution finished (code {ret})')
 
+    # ------------------ inline suggestions / autocomplete ------------------
+    def _on_key_release(self, event):
+        # Set dirty flag
+        self.set_dirty(True)
+        # Re-highlight current line immediately for as-you-type feedback
+        if self.highlighter:
+            try:
+                lineno = int(str(self.text.index('insert')).split('.')[0])
+                lang = 'cpp'
+                self.highlighter.highlight_line(lineno, language=lang)
+            except Exception:
+                # Fallback: refresh visible region
+                self.update_highlight()
+        else:
+            # fallback: update full or line-level regex
+            self.update_highlight()
+
+        # Trigger suggestions for identifiers
+        self._schedule_autocomplete()
+        # run quick diagnostics
+        self._schedule_quick_diagnostics()
+
+    def _schedule_quick_diagnostics(self):
+        if getattr(self, 'diagnostic_timer', None):
+            self.root.after_cancel(self.diagnostic_timer)
+        self.diagnostic_timer = self.root.after(120, self._diagnose_current_line)
+
+    def _diagnose_current_line(self):
+        # Clear previous error tags for now
+        self.text.tag_remove('error_line', '1.0', 'end')
+        # Visible region check for unmatched braces/quotes and missing semicolons
+        try:
+            first_idx = self.text.index('@0,0')
+            last_idx = self.text.index(f'@0,{self.text.winfo_height()}')
+            full_text = self.text.get('1.0', 'end-1c')
+        except Exception:
+            full_text = self.text.get('1.0', 'end-1c')
+            first_idx = '1.0'
+            last_idx = 'end'
+
+        # We'll run a lightweight scan on the visible region lines
+        try:
+            first_line = int(first_idx.split('.')[0])
+            last_line = int(last_idx.split('.')[0])
+        except Exception:
+            first_line = 1
+            last_line = max(1, full_text.count('\n') + 1)
+
+        lines = full_text.splitlines()
+        # Bracket stack to detect mismatches in visible region
+        stack = []
+        for i in range(first_line - 1, min(last_line, len(lines))):
+            line = lines[i]
+            for ch in line:
+                if ch in '{([':
+                    stack.append((ch, i + 1))
+                elif ch in '})]':
+                    if stack:
+                        top, tline = stack[-1]
+                        if (top == '{' and ch == '}') or (top == '(' and ch == ')') or (top == '[' and ch == ']'):
+                            stack.pop()
+                        else:
+                            # mismatch: highlight this line
+                            start = f'{i + 1}.0'
+                            end = f'{i + 1}.0 + 1 line'
+                            self.text.tag_add('error_line', start, end)
+                            # also scroll to it
+                            self.text.see(start)
+                    else:
+                        # unmatched closing
+                        start = f'{i + 1}.0'
+                        end = f'{i + 1}.0 + 1 line'
+                        self.text.tag_add('error_line', start, end)
+                        self.text.see(start)
+        # Any remaining opening brackets in stack -> mark their lines
+        for _, line_no in stack:
+            start = f'{line_no}.0'
+            end = f'{line_no}.0 + 1 line'
+            self.text.tag_add('error_line', start, end)
+            self.text.see(start)
+
+        # Missing semicolon suggestion: naive: if previous line ends with expression and no ;
+        try:
+            cur_line = int(self.text.index('insert').split('.')[0])
+            if cur_line - 1 >= 1:
+                prev_line_text = lines[cur_line - 2].rstrip()
+                if prev_line_text and not prev_line_text.endswith(';') and not prev_line_text.endswith('{') and not prev_line_text.startswith('#') and not prev_line_text.strip().startswith('//') and not prev_line_text.endswith('}'):
+                    # Suggest semicolon by putting a suggestion in the suggestions box
+                    hint = 'Add ;'
+                    # show in suggestion list for quickfix
+                    self._show_quickfix_hint(hint, cur_line - 1)
+        except Exception:
+            pass
+
+    def _show_quickfix_hint(self, hint_text: str, line_no: int):
+        # add quick fix suggestion as special item in suggestions if none present
+        items = [hint_text]
+        # compute end of line
+        try:
+            line_text = self.text.get(f'{line_no}.0', f'{line_no}.end')
+            end_index = f"{line_no}.{len(line_text)}"
+        except Exception:
+            end_index = f'{line_no}.end'
+        # show suggestion at the end of the line
+        self._show_suggestion_box(items, end_index, end_index)
+
+    def _schedule_autocomplete(self):
+        if getattr(self, 'autocomplete_timer', None):
+            self.root.after_cancel(self.autocomplete_timer)
+        self.autocomplete_timer = self.root.after(160, self._show_autocomplete)
+
+    def _show_autocomplete(self):
+        # find the current word under the caret
+        # Only show suggestions for C++ files (based on extension), otherwise hide
+        if self.current_file:
+            _, ext = os.path.splitext(self.current_file)
+            if ext.lower() not in ('.cpp', '.cc', '.cxx', '.c', '.hpp', '.hh', '.h', '.hxx'):
+                self._hide_suggestions()
+                return
+        # find the current word under the caret using direct scanning
+        text = self.get_text()
+        cur = self.text.index('insert')
+        try:
+            line, col = map(int, cur.split('.'))
+        except Exception:
+            self._hide_suggestions()
+            return
+        lines = text.splitlines(True)
+        if line - 1 >= len(lines):
+            self._hide_suggestions()
+            return
+        # compute absolute char offset
+        start_offset = sum(len(s) for s in lines[:line - 1])
+        abs_idx = start_offset + col
+        # scan left to find start of identifier
+        left = abs_idx
+        while left > 0 and (text[left - 1].isalnum() or text[left - 1] == '_'):
+            left -= 1
+        right = abs_idx
+        while right < len(text) and (text[right].isalnum() or text[right] == '_'):
+            right += 1
+        if left == abs_idx:
+            self._hide_suggestions()
+            return
+        # convert back to index strings
+        word_start = f'{line}.{left - start_offset}'
+        word_end = f'{line}.{col}'
+        prefix = text[left:abs_idx]
+        if not prefix or len(prefix) < 1:
+            self._hide_suggestions()
+            return
+        # compute suggestions: keywords + names in file
+        suggestions = self._collect_suggestions(prefix)
+        if not suggestions:
+            self._hide_suggestions()
+            return
+        # show suggestion popup
+        self._show_suggestion_box(suggestions, word_start, word_end)
+
+    def _collect_suggestions(self, prefix: str):
+        pref = prefix
+        # C++ keywords + common std names
+        base_keywords = [
+            'int', 'long', 'short', 'char', 'bool', 'double', 'float', 'auto', 'void', 'return', 'if', 'else', 'for', 'while', 'switch', 'case', 'default', 'break', 'continue', 'namespace', 'using', 'std', 'cout', 'cin', 'vector', 'string', 'map', 'unordered_map', 'endl', 'nullptr', 'new', 'delete', 'class', 'struct', 'template'
+        ]
+        # gather file symbols
+        text = self.get_text()
+        symbols = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", text))
+        candidates = set(base_keywords) | symbols
+        # Filter
+        filtered = [s for s in sorted(candidates) if s.startswith(pref) and s != pref]
+        # Limit suggestions number
+        return filtered[:30]
+
+    def _show_suggestion_box(self, suggestions, start, end):
+        # create Toplevel once
+        if self.suggest_box is None:
+            self.suggest_box = tk.Toplevel(self.root)
+            self.suggest_box.wm_overrideredirect(True)
+            self.suggest_list = tk.Listbox(self.suggest_box, height=6)
+            self.suggest_list.pack(side='left', fill='both', expand=True)
+            self.suggest_list.bind('<Double-1>', lambda e: self._accept_suggestion())
+            self.suggest_list.bind('<Return>', lambda e: self._accept_suggestion())
+            self.suggest_list.bind('<Escape>', lambda e: self._hide_suggestions())
+            self.suggest_list.bind('<Up>', self._suggest_up)
+            self.suggest_list.bind('<Down>', self._suggest_down)
+        else:
+            # clear
+            if self.suggest_list is not None:
+                self.suggest_list.delete(0, 'end')
+        # populate
+        if self.suggest_list is not None:
+            for item in suggestions:
+                self.suggest_list.insert('end', item)
+        # select first
+        if self.suggest_list is not None:
+            self.suggest_list.select_set(0)
+        # position near caret
+        try:
+            bbox = self.text.bbox('insert')
+            if bbox:
+                x, y, width, height = bbox
+                x = x + self.text.winfo_rootx()
+                y = y + self.text.winfo_rooty() + height
+            else:
+                x = self.text.winfo_rootx()
+                y = self.text.winfo_rooty()
+        except Exception:
+            x = self.text.winfo_rootx()
+            y = self.text.winfo_rooty()
+        if self.suggest_box is not None:
+            self.suggest_box.wm_geometry(f'+{x}+{y}')
+            self.suggest_box.deiconify()
+            self.suggest_box.lift()
+            self.suggest_box.update_idletasks()
+        self.suggest_start = start
+        self.suggest_end = end
+        # Focus list to receive keys
+        try:
+            if self.suggest_list is not None:
+                self.suggest_list.focus_set()
+        except Exception:
+            pass
+
+    def _hide_suggestions(self):
+        if self.suggest_box is not None:
+            try:
+                self.suggest_box.withdraw()
+            except Exception:
+                pass
+        try:
+            # Return focus to editor
+            self.text.focus_set()
+        except Exception:
+            pass
+
+    def _suggest_up(self, event):
+        try:
+            sl = self.suggest_list
+            if sl is None:
+                return 'break'
+            cur = sl.curselection()[0]
+            if cur > 0:
+                sl.select_clear(cur)
+                sl.select_set(cur - 1)
+                sl.activate(cur - 1)
+        except Exception:
+            pass
+        return 'break'
+
+    def _suggest_down(self, event):
+        try:
+            sl = self.suggest_list
+            if sl is None:
+                return 'break'
+            cur = sl.curselection()[0]
+            if cur < sl.size() - 1:
+                sl.select_clear(cur)
+                sl.select_set(cur + 1)
+                sl.activate(cur + 1)
+        except Exception:
+            pass
+        return 'break'
+
+    def _on_tab(self, event):
+        # If suggestion box visible, accept suggestion, otherwise insert tab
+        try:
+            if self.suggest_box is not None and getattr(self.suggest_box, 'winfo_viewable', lambda: False)():
+                self._accept_suggestion()
+                return 'break'
+        except Exception:
+            pass
+        try:
+            self.text.insert('insert', '\t')
+        except Exception:
+            pass
+        return 'break'
+
+    def _accept_suggestion(self):
+        try:
+            sl = self.suggest_list
+            if sl is None:
+                return
+            sel = sl.curselection()
+            if not sel:
+                return
+            value = sl.get(sel[0])
+            # replace the suggested word in the editor
+            try:
+                # If quickfix hint such as 'Add ;' replace special behavior
+                if isinstance(value, str) and value.startswith('Add ;'):
+                    # Insert a semicolon at suggest_start (usually end of line)
+                    try:
+                        if self.suggest_start is not None:
+                            self.text.insert(self.suggest_start, ';')
+                        else:
+                            self.text.insert('insert', ';')
+                    except Exception:
+                        # fallback: insert at cursor
+                        self.text.insert('insert', ';')
+                else:
+                    if self.suggest_start is not None and self.suggest_end is not None:
+                        self.text.delete(self.suggest_start, self.suggest_end)
+                        self.text.insert(self.suggest_start, value)
+                        # move caret to end of inserted value
+                        new_index = f"{self.suggest_start}+{len(value)}c"
+                        self.text.mark_set('insert', new_index)
+                    else:
+                        # fallback: just insert at cursor
+                        self.text.insert('insert', value)
+            except Exception:
+                pass
+            self._hide_suggestions()
+            self.set_dirty(True)
+            self.update_highlight()
+        except Exception:
+            pass
+
     def stop_current_process(self):
         proc = getattr(self, 'current_process', None)
         if proc is not None:
@@ -460,7 +775,7 @@ int main() {
 
 def main():
     root = tk.Tk()
-    app = CppEditorApp(root)
+    CppEditorApp(root)
     root.minsize(640, 480)
     root.mainloop()
 

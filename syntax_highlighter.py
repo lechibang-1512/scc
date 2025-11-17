@@ -4,16 +4,30 @@ syntax_highlighter.py
 Use Pygments to perform robust syntax highlighting for a Tkinter Text widget.
 Falls back to a simple tag-based approach if Pygments is not installed.
 """
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Callable, Type, TYPE_CHECKING
+
+# Predefine names so static analysis (Pylance) sees them as always bound.
+# At runtime we try to import Pygments; if it's not installed the names
+# remain None and `PYGMENTS_AVAILABLE` is False.
+lex: Optional[Callable[..., Any]] = None
+get_lexer_by_name: Optional[Callable[..., Any]] = None
+CppLexer: Optional[Type[Any]] = None
+Token: Any = None
+PYGMENTS_AVAILABLE = False
 
 try:
-    from pygments import lex
-    from pygments.lexers import CppLexer, get_lexer_by_name
-    from pygments.token import Token
+    # Use aliased imports and silence import-time errors for editors
+    from pygments import lex as _lex  # type: ignore[import]
+    from pygments.lexers import CppLexer as _CppLexer, get_lexer_by_name as _get_lexer_by_name  # type: ignore[import]
+    from pygments.token import Token as _Token  # type: ignore[import]
+    lex = _lex
+    get_lexer_by_name = _get_lexer_by_name
+    CppLexer = _CppLexer
+    Token = _Token
     PYGMENTS_AVAILABLE = True
 except Exception:
+    # Pygments not available at runtime; keep PYGMENTS_AVAILABLE = False
     PYGMENTS_AVAILABLE = False
-    # Keep imports local in fallback if needed
 
 
 class SyntaxHighlighter:
@@ -66,6 +80,8 @@ class SyntaxHighlighter:
         """
         if not PYGMENTS_AVAILABLE:
             return
+        # At this point the imported symbols must be available.
+        assert get_lexer_by_name is not None and CppLexer is not None and lex is not None
         text = self.text.get('1.0', 'end-1c')
         selection_text = text[start_char:end_char]
         # remove tags in the region for tags we use
@@ -126,6 +142,22 @@ class SyntaxHighlighter:
             # On any exception, fallback to highlight_all
             self.highlight_all(language=language)
 
+    def highlight_line(self, lineno: int, language: str = 'cpp'):
+        """Highlight a single 1-based line number with Pygments tokens.
+
+        This is useful for per-line updates while typing.
+        """
+        if not PYGMENTS_AVAILABLE:
+            return
+        full_text = self.text.get('1.0', 'end-1c')
+        lines = full_text.splitlines(True)
+        if lineno < 1 or lineno > len(lines):
+            return
+        # compute offsets
+        start_char = sum(len(l) for l in lines[:lineno-1])
+        end_char = start_char + len(lines[lineno-1])
+        return self.highlight_region(start_char, end_char, language=language)
+
     def highlight_all(self, language: str = 'cpp'):
         """Highlight the entire content of the widget using Pygments (if available).
 
@@ -138,6 +170,8 @@ class SyntaxHighlighter:
         # If no Pygments, bail
         if not PYGMENTS_AVAILABLE:
             return
+        # Ensure static analyzer knows these are present
+        assert get_lexer_by_name is not None and CppLexer is not None and lex is not None
         try:
             if language and language != 'cpp':
                 lexer = get_lexer_by_name(language)
