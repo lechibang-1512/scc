@@ -27,8 +27,6 @@ class CppEditorApp:
         self._temp_files: list[str] = []
         # track last temporary source file (for error mapping)
         self._last_temp_source: Optional[str] = None
-        # aggressive cleanup policy: keep only N recent temp files
-        self._temp_keep_last = 1
         # track if editor buffer is modified (unsaved changes)
         self.dirty = False
         # autocomplete/suggestion timers and UI
@@ -580,11 +578,6 @@ int main() {
         If the editor is tied to a saved file and matches on disk, we still compile the current
         content by writing to a temporary file so we don't require a save."""
         txt = self.get_text()
-        # Clean up older temp files first, keep only last N
-        try:
-            self._cleanup_temp_files(keep_last=self._temp_keep_last)
-        except Exception:
-            pass
         try:
             # Create a named temp source file
             import tempfile as _tempfile
@@ -599,46 +592,6 @@ int main() {
             return tf.name, True
         except Exception:
             return None, False
-
-    def _cleanup_temp_files(self, keep_last: int = 1):
-        """Remove old temporary files, keeping only the last `keep_last` entries in the
-        `_temp_files` list. This prevents disk accumulation by removing older temporary
-        sources and executables created during compile operations.
-        """
-        if not getattr(self, '_temp_files', None):
-            return
-        try:
-            if keep_last < 0:
-                keep_last = 0
-            # Determine which files to remove
-            if keep_last == 0:
-                to_remove = list(self._temp_files)
-            else:
-                to_remove = list(self._temp_files[:-keep_last])
-            for p in to_remove:
-                try:
-                    if p and os.path.exists(p):
-                        os.unlink(p)
-                except Exception:
-                    pass
-            # retain only the most recent `keep_last` items
-            if keep_last == 0:
-                self._temp_files = []
-            else:
-                self._temp_files = self._temp_files[-keep_last:]
-            # Also ensure _last_temp_source is consistent
-            if self._temp_files:
-                # prefer latest source if present among kept files
-                last_source = None
-                for p in reversed(self._temp_files):
-                    if p and p.endswith('.cpp'):
-                        last_source = p
-                        break
-                self._last_temp_source = last_source
-            else:
-                self._last_temp_source = None
-        except Exception:
-            pass
 
     def _schedule_autocomplete(self):
         if getattr(self, 'autocomplete_timer', None):
