@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import re
 from typing import Optional
 import subprocess
@@ -697,7 +698,7 @@ int main() {
         pref = prefix
         # C++ keywords + common std names
         base_keywords = [
-            'int', 'long', 'short', 'char', 'bool', 'double', 'float', 'auto', 'void', 'return', 'if', 'else', 'for', 'while', 'switch', 'case', 'default', 'break', 'continue', 'namespace', 'using', 'std', 'cout', 'cin', 'vector', 'string', 'map', 'unordered_map', 'endl', 'nullptr', 'new', 'delete', 'class', 'struct', 'template'
+            'int', 'long', 'short', 'char', 'bool', 'double', 'float', 'auto', 'void', 'return', 'if', 'else', 'for', 'while', 'switch', 'case', 'default', 'break', 'continue', 'namespace', 'using', 'std', 'cout', 'cin', 'vector', 'string', 'map', 'unordered_map', 'set', 'unordered_set', 'list', 'deque', 'queue', 'stack', 'pair', 'tuple', 'algorithm', 'sort', 'find', 'endl', 'nullptr', 'new', 'delete', 'class', 'struct', 'template', 'typename', 'public', 'private', 'protected', 'virtual', 'override', 'const', 'static', 'constexpr', 'include', 'iostream', 'fstream', 'sstream'
         ]
         # gather file symbols
         text = self.get_text()
@@ -894,6 +895,33 @@ int main() {
         self.root.after(0, lambda: (self.output.config(state='normal'), self.output.delete('1.0', 'end'), self.output.config(state='disabled')))
 
 
+def _ensure_venv():
+    """Restart the script in the .venv if it exists and we're not already in it."""
+    venv_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
+    if not os.path.exists(venv_dir):
+        return
+
+    # Check if we are running from the venv
+    if sys.platform == "win32":
+        python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
+    else:
+        python_exe = os.path.join(venv_dir, "bin", "python")
+
+    # If the venv python doesn't exist, we can't switch
+    if not os.path.exists(python_exe):
+        return
+
+    # If we are already running the venv python, do nothing
+    if os.path.abspath(sys.executable) == os.path.abspath(python_exe):
+        return
+
+    print(f"Switching to virtual environment: {venv_dir}...")
+    try:
+        os.execv(python_exe, [python_exe] + sys.argv)
+    except OSError as e:
+        print(f"Failed to switch to venv: {e}")
+
+
 def main():
     root = tk.Tk()
     CppEditorApp(root)
@@ -902,4 +930,5 @@ def main():
 
 
 if __name__ == '__main__':
+    _ensure_venv()
     main()

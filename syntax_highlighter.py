@@ -46,22 +46,34 @@ class SyntaxHighlighter:
             'Keyword.Type': 'type',
             'Name.Function': 'function',
             'Name.Class': 'class',
+            'Name.Namespace': 'namespace',
+            'Keyword.Namespace': 'keyword_namespace',
+            'Keyword.Declaration': 'keyword_declaration',
+            'Keyword.Reserved': 'keyword_reserved',
+            'Literal.String.Char': 'char',
+            'Name.Variable': 'variable',
         }
 
     def create_tags(self):
         # Define tags and basic colors; apps can configure them further
-        self.text.tag_configure('keyword', foreground='blue')
-        self.text.tag_configure('builtin', foreground='#6b6')
-        self.text.tag_configure('name', foreground='#000')
-        self.text.tag_configure('string', foreground='#d14')
-        self.text.tag_configure('number', foreground='#b000b0')
-        self.text.tag_configure('comment', foreground='#888')
-        self.text.tag_configure('operator', foreground='#333')
-        self.text.tag_configure('punctuation', foreground='#333')
-        self.text.tag_configure('type', foreground='#1c9d00')
-        self.text.tag_configure('function', foreground='#6a5acd')
-        self.text.tag_configure('class', foreground='#008fb3')
-        self.text.tag_configure('error_line', background='#420000')
+        self.text.tag_configure('keyword', foreground='#0000FF')  # Blue
+        self.text.tag_configure('builtin', foreground='#008000')  # Green
+        self.text.tag_configure('name', foreground='#000000')     # Black
+        self.text.tag_configure('string', foreground='#A31515')   # Red
+        self.text.tag_configure('char', foreground='#A31515')     # Red
+        self.text.tag_configure('number', foreground='#098658')   # Dark Green
+        self.text.tag_configure('comment', foreground='#008000')  # Green
+        self.text.tag_configure('operator', foreground='#000000') # Black
+        self.text.tag_configure('punctuation', foreground='#000000') # Black
+        self.text.tag_configure('type', foreground='#2B91AF')     # Teal
+        self.text.tag_configure('function', foreground='#795E26') # Gold/Brown
+        self.text.tag_configure('class', foreground='#2B91AF')    # Teal
+        self.text.tag_configure('namespace', foreground='#000000')
+        self.text.tag_configure('keyword_namespace', foreground='#0000FF')
+        self.text.tag_configure('keyword_declaration', foreground='#0000FF')
+        self.text.tag_configure('keyword_reserved', foreground='#0000FF')
+        self.text.tag_configure('variable', foreground='#001080') # Dark Blue
+        self.text.tag_configure('error_line', background='#FFCCCC') # Light Red background
 
     def _tag_name_for_token(self, ttype) -> str:
         # ttype is a pygments token object; convert to human form
