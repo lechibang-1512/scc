@@ -53,12 +53,8 @@ class CppEditorApp:
         filemenu.add_command(label='Exit', command=self.root.quit)
         menubar.add_cascade(label='File', menu=filemenu)
 
-        buildmenu = tk.Menu(menubar, tearoff=False)
-        buildmenu.add_command(label='Compile', command=self.compile_code)
-        buildmenu.add_command(label='Run', command=self.run_program)
-        buildmenu.add_command(label='Compile & Run', command=self.compile_and_run)
-        menubar.add_cascade(label='Build', menu=buildmenu)
-
+        # Note: Build is exposed via the toolbar 'Build' menubutton.
+        # Do not add a separate Build menu to the menubar to avoid duplication.
         self.root.config(menu=menubar)
 
         # Top frame: code editor with line numbers
@@ -77,12 +73,15 @@ class CppEditorApp:
 
         side_frame = tk.Frame(self.root)
         side_frame.pack(fill='x')
-        btn_compile = tk.Button(side_frame, text='Compile', command=self.compile_code)
-        btn_compile.pack(side='left', padx=6, pady=6)
-        btn_run = tk.Button(side_frame, text='Run', command=self.run_program)
-        btn_run.pack(side='left', padx=6, pady=6)
-        btn_crun = tk.Button(side_frame, text='Compile && Run', command=self.compile_and_run)
-        btn_crun.pack(side='left', padx=6, pady=6)
+        # Single Build menubutton that exposes Compile, Run, Compile && Run
+        build_mb = tk.Menubutton(side_frame, text='Build', relief='raised')
+        build_menu = tk.Menu(build_mb, tearoff=False)
+        build_menu.add_command(label='Compile', command=lambda: self.execute_build('compile'))
+        build_menu.add_command(label='Run', command=lambda: self.execute_build('run'))
+        build_menu.add_command(label='Compile && Run', command=lambda: self.execute_build('compile_run'))
+        build_mb.config(menu=build_menu)
+        build_mb.pack(side='left', padx=6, pady=6)
+        # Keep a Stop button nearby
         btn_stop = tk.Button(side_frame, text='Stop', command=self.stop_current_process)
         btn_stop.pack(side='left', padx=6, pady=6)
 
@@ -256,20 +255,91 @@ class CppEditorApp:
             end = f'1.0+{m.end()}c'
             self.text.tag_add('comment', start, end)
 
-    def compile_code(self):
-        # Compile current editor text without requiring the user to save
+    def execute_build(self, mode: str):
+        """Unified build execution function.
+        
+        Args:
+            mode: 'compile', 'run', or 'compile_run'
+        """
+        if mode == 'run':
+            # For run-only mode, check if exe exists
+            exe = self.current_exe
+            if exe is None or not os.path.exists(exe):
+                # No exe available, fallback to compile & run
+                path, is_temp = self._prepare_source_for_compile()
+                if not path:
+                    messagebox.showerror('Error', 'Executable not found. Compile first.')
+                    return
+                mode = 'compile_run'
+            else:
+                # Run existing exe
+                self.output_clear()
+                self.status_var.set('Running...')
+                threading.Thread(target=self._execute_thread, args=(mode, exe, None, False), daemon=True).start()
+                return
+        
+        # For compile or compile_run modes, prepare source
         path, is_temp = self._prepare_source_for_compile()
         if not path:
             messagebox.showerror('Error', 'Unable to prepare source for compilation')
             return
+        
         self.output_clear()
-        self.status_var.set('Compiling...')
-        threading.Thread(target=self._compile_thread, args=(path, is_temp), daemon=True).start()
+        if mode == 'compile':
+            self.status_var.set('Compiling...')
+        elif mode == 'compile_run':
+            self.status_var.set('Compiling and running...')
+        
+        threading.Thread(target=self._execute_thread, args=(mode, path, None, is_temp), daemon=True).start()
 
-    def _compile_thread(self, path, is_temp: bool):
+    def _execute_thread(self, mode: str, path: str, exe: Optional[str], is_temp: bool):
+        """Unified execution thread for compile, run, and compile_run operations.
+        
+        Args:
+            mode: 'compile', 'run', or 'compile_run'
+            path: Source file path (for compile modes) or exe path (for run mode)
+            exe: Executable path (used when mode is 'run' with existing exe)
+            is_temp: Whether the source file is temporary
+        """
+        # Run-only mode
+        if mode == 'run':
+            try:
+                proc = subprocess.Popen([path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.current_process = proc
+                try:
+                    stdout, stderr = proc.communicate(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    self.current_process = None
+                    self.output_write('\nProgram timed out (20s).\n')
+                    self.status_var.set('Program timed out')
+                    return
+                self.current_process = None
+            except subprocess.TimeoutExpired:
+                self.output_write('\nProgram timed out (20s).\n')
+                self.status_var.set('Program timed out')
+                return
+            except Exception as e:
+                self.output_write(f'Error running program: {e}\n')
+                self.status_var.set('Run failed')
+                return
+            if stdout:
+                self.output_write(stdout)
+            if stderr:
+                self.output_write(stderr)
+            try:
+                retcode = proc.returncode
+            except Exception:
+                retcode = 0
+            self.status_var.set(f'Execution finished (code {retcode})')
+            return
+        
+        # Compile phase (for compile and compile_run modes)
         base, ext = os.path.splitext(path)
-        out_exe = base  # without extension; on Linux, no .exe
+        out_exe = base
         cmd = ['g++', '-std=c++17', path, '-o', out_exe]
+        
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.current_process = proc
@@ -281,31 +351,72 @@ class CppEditorApp:
             self.output_write(f'Error running g++: {e}\n')
             self.status_var.set('Compilation failed')
             return
+        
         if proc.returncode != 0:
-            self.output_write('Compiler returned errors:\n', clear=False)
+            if mode == 'compile':
+                self.output_write('Compiler returned errors:\n', clear=False)
+            else:
+                self.output_write('Compilation failed:\n')
             self.output_write(stderr)
             self.status_var.set('Compilation failed')
             self._parse_and_highlight_errors(stderr)
-        else:
+            return
+        
+        # Compilation succeeded
+        if mode == 'compile':
             self.output_write('Compilation succeeded.\n')
             self.status_var.set('Compiled')
-            # set the current_exe path so run_program can run the latest build
-            self.current_exe = out_exe
-            # register the temp exe for cleanup
+        else:
+            self.output_write('Compilation succeeded. Running...\n')
+        
+        # Update current_exe and register temp files
+        self.current_exe = out_exe
+        if is_temp:
             try:
-                if is_temp:
-                    try:
-                        self._temp_files.append(out_exe)
-                    except Exception:
-                        pass
+                self._temp_files.append(out_exe)
             except Exception:
                 pass
-            # if the source was a temporary file, we can remove the source now
-            if is_temp:
+        
+        # Cleanup temp source file
+        if is_temp:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+        
+        # Run phase (only for compile_run mode)
+        if mode == 'compile_run':
+            try:
+                runproc = subprocess.Popen([out_exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.current_process = runproc
                 try:
-                    os.unlink(path)
-                except Exception:
-                    pass
+                    out, err = runproc.communicate(timeout=20)
+                except subprocess.TimeoutExpired:
+                    runproc.kill()
+                    out, err = runproc.communicate()
+                    self.current_process = None
+                    self.output_write('\nProgram timed out (20s).\n')
+                    self.status_var.set('Program timed out')
+                    return
+                self.current_process = None
+            except subprocess.TimeoutExpired:
+                self.output_write('\nProgram timed out (20s).\n')
+                self.status_var.set('Program timed out')
+                return
+            except Exception as e:
+                self.output_write(f'Error running program: {e}\n')
+                self.status_var.set('Run failed')
+                return
+            
+            if out:
+                self.output_write(out)
+            if err:
+                self.output_write(err)
+            try:
+                ret = runproc.returncode
+            except Exception:
+                ret = 0
+            self.status_var.set(f'Execution finished (code {ret})')
 
     def _parse_and_highlight_errors(self, stderr_text):
         # Parse messages like: file.cpp:line:col: error: message
@@ -334,130 +445,6 @@ class CppEditorApp:
                     self.text.see(start)
                 except Exception:
                     pass
-
-    def run_program(self):
-        # Prefer executing the last compiled exe (may be temporary)
-        exe = self.current_exe
-        if exe is None or not os.path.exists(exe):
-            # fallback: try to compile current content on-the-fly and run
-            path, is_temp = self._prepare_source_for_compile()
-            if not path:
-                messagebox.showerror('Error', 'Executable not found. Compile first.')
-                return
-            # compile then run using compile_and_run thread
-            self.compile_and_run()
-            return
-        self.output_clear()
-        self.status_var.set('Running...')
-        threading.Thread(target=self._run_thread, args=(exe,), daemon=True).start()
-
-    def _run_thread(self, exe):
-        try:
-            proc = subprocess.Popen([exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self.current_process = proc
-            try:
-                stdout, stderr = proc.communicate(timeout=20)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                stdout, stderr = proc.communicate()
-                self.current_process = None
-                self.output_write('\nProgram timed out (20s).\n')
-                self.status_var.set('Program timed out')
-                return
-            self.current_process = None
-        except subprocess.TimeoutExpired:
-            self.output_write('\nProgram timed out (20s).\n')
-            self.status_var.set('Program timed out')
-            return
-        except Exception as e:
-            self.output_write(f'Error running program: {e}\n')
-            self.status_var.set('Run failed')
-            return
-        if stdout:
-            self.output_write(stdout)
-        if stderr:
-            self.output_write(stderr)
-        try:
-            retcode = proc.returncode
-        except Exception:
-            retcode = 0
-        self.status_var.set(f'Execution finished (code {retcode})')
-
-    def compile_and_run(self):
-        path, is_temp = self._prepare_source_for_compile()
-        if not path:
-            messagebox.showerror('Error', 'Unable to prepare source for compilation')
-            return
-        self.output_clear()
-        self.status_var.set('Compiling and running...')
-        threading.Thread(target=self._compile_and_run_thread, args=(path, is_temp), daemon=True).start()
-
-    def _compile_and_run_thread(self, path, is_temp: bool):
-        base, ext = os.path.splitext(path)
-        exe = base
-        cmd = ['g++', '-std=c++17', path, '-o', exe]
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self.current_process = proc
-            try:
-                stdout, stderr = proc.communicate()
-            finally:
-                self.current_process = None
-        except Exception as e:
-            self.output_write(f'Error running g++: {e}\n')
-            self.status_var.set('Compilation failed')
-            return
-        if proc.returncode != 0:
-            self.output_write('Compilation failed:\n')
-            self.output_write(stderr)
-            self.status_var.set('Compilation failed')
-            self._parse_and_highlight_errors(stderr)
-            return
-        self.output_write('Compilation succeeded. Running...\n')
-        try:
-            runproc = subprocess.Popen([exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self.current_process = runproc
-            try:
-                out, err = runproc.communicate(timeout=20)
-            except subprocess.TimeoutExpired:
-                runproc.kill()
-                out, err = runproc.communicate()
-                self.current_process = None
-                self.output_write('\nProgram timed out (20s).\n')
-                self.status_var.set('Program timed out')
-                return
-            # normal completion path
-            self.current_process = None
-            # record latest exe
-            self.current_exe = exe
-            if is_temp:
-                try:
-                    self._temp_files.append(exe)
-                except Exception:
-                    pass
-            # cleanup source if it was temporary
-            if is_temp:
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
-        except subprocess.TimeoutExpired:
-            self.output_write('\nProgram timed out (20s).\n')
-            self.status_var.set('Program timed out')
-            return
-        except Exception as e:
-            self.output_write(f'Error running program: {e}\n')
-            self.status_var.set('Run failed')
-            return
-        if out:
-            self.output_write(out)
-        if err:
-            self.output_write(err)
-        try:
-            ret = runproc.returncode
-        except Exception:
-            ret = 0
-        self.status_var.set(f'Execution finished (code {ret})')
 
     # ------------------ inline suggestions / autocomplete ------------------
     def _on_key_release(self, event):
@@ -884,33 +871,6 @@ class CppEditorApp:
         self.root.after(0, lambda: (self.output.config(state='normal'), self.output.delete('1.0', 'end'), self.output.config(state='disabled')))
 
 
-def _ensure_venv():
-    """Restart the script in the .venv if it exists and we're not already in it."""
-    venv_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
-    if not os.path.exists(venv_dir):
-        return
-
-    # Check if we are running from the venv
-    if sys.platform == "win32":
-        python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
-    else:
-        python_exe = os.path.join(venv_dir, "bin", "python")
-
-    # If the venv python doesn't exist, we can't switch
-    if not os.path.exists(python_exe):
-        return
-
-    # If we are already running the venv python, do nothing
-    if os.path.abspath(sys.executable) == os.path.abspath(python_exe):
-        return
-
-    print(f"Switching to virtual environment: {venv_dir}...")
-    try:
-        os.execv(python_exe, [python_exe] + sys.argv)
-    except OSError as e:
-        print(f"Failed to switch to venv: {e}")
-
-
 def main():
     root = tk.Tk()
     CppEditorApp(root)
@@ -919,5 +879,4 @@ def main():
 
 
 if __name__ == '__main__':
-    _ensure_venv()
     main()
