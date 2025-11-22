@@ -40,7 +40,6 @@ class CppEditorApp:
         self.suggest_list: Optional[tk.Listbox] = None
         self.suggest_start: Optional[str] = None
         self.suggest_end: Optional[str] = None
-        self.set_text(self.default_cpp())
         self.update_highlight()
 
     def _build_ui(self):
@@ -133,16 +132,6 @@ class CppEditorApp:
 
         # Bind close event to check for unsaved changes
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
-
-    def default_cpp(self):
-        return r"""#include <iostream>
-using namespace std;
-
-int main() {
-    cout << "Hello, World!" << endl;
-    return 0;
-}
-"""
 
     def new_file(self):
         if not self.confirm_discard():
