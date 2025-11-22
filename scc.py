@@ -2,6 +2,7 @@
 import os
 import sys
 import re
+import json
 from typing import Optional
 import subprocess
 import threading
@@ -10,14 +11,32 @@ from tkinter import filedialog, messagebox
 # no combobox, C++ only suggestion/highlighting
 
 
+def load_config():
+    """Load configuration from config.json."""
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: Could not load config.json: {e}")
+        # Return minimal default config
+        return {
+            "editor": {"font": "Consolas", "font_size": 12, "wrap": "none"},
+            "compiler": {"command": "g++", "flags": ["-std=c++17"], "timeout": 20},
+            "syntax": {"keywords": [], "types": [], "colors": {}}
+        }
+
+
+CONFIG = load_config()
+
+
 class CppEditorApp:
     def __init__(self, root):
         self.root = root
         self.root.title('C++ Editor & Compiler')
         self.current_file = None
-        self._build_ui()
-        self._bind_events()
-        # Start with an example C++ snippet
+        # config reference - must be set before _build_ui()
+        self.config = CONFIG
         # Initialize highlight_timer before calling update_highlight in set_text
         self.highlight_timer = None
         # process management
@@ -29,9 +48,11 @@ class CppEditorApp:
         # track last temporary source file (for error mapping)
         self._last_temp_source: Optional[str] = None
         # aggressive cleanup policy: keep only N recent temp files
-        self._temp_keep_last = 1
+        self._temp_keep_last = self.config.get('temp_files', {}).get('keep_last', 1)
         # track if editor buffer is modified (unsaved changes)
         self.dirty = False
+        self._build_ui()
+        self._bind_events()
         # autocomplete/suggestion timers and UI
         self.autocomplete_timer = None
         self.diagnostic_timer = None
@@ -61,10 +82,17 @@ class CppEditorApp:
         top_frame = tk.Frame(self.root)
         top_frame.pack(fill='both', expand=True)
 
-        self.line_numbers = tk.Text(top_frame, width=5, padx=3, takefocus=0, bd=0, bg='#f0f0f0', fg='gray', state='disabled')
+        editor_cfg = self.config.get('editor', {})
+        ln_width = editor_cfg.get('line_number_width', 5)
+        ln_bg = editor_cfg.get('line_number_bg', '#f0f0f0')
+        ln_fg = editor_cfg.get('line_number_fg', 'gray')
+        self.line_numbers = tk.Text(top_frame, width=ln_width, padx=3, takefocus=0, bd=0, bg=ln_bg, fg=ln_fg, state='disabled')
         self.line_numbers.pack(side='left', fill='y')
 
-        self.text = tk.Text(top_frame, wrap='none', undo=True, font=('Consolas', 12))
+        editor_font = editor_cfg.get('font', 'Consolas')
+        editor_font_size = editor_cfg.get('font_size', 12)
+        editor_wrap = editor_cfg.get('wrap', 'none')
+        self.text = tk.Text(top_frame, wrap=editor_wrap, undo=True, font=(editor_font, editor_font_size))
         self.text.pack(side='left', fill='both', expand=True)
 
         xscroll = tk.Scrollbar(self.root, orient='horizontal', command=self.text.xview)
@@ -73,15 +101,10 @@ class CppEditorApp:
 
         side_frame = tk.Frame(self.root)
         side_frame.pack(fill='x')
-        # Single Build menubutton that exposes Compile, Run, Compile && Run
-        build_mb = tk.Menubutton(side_frame, text='Build', relief='raised')
-        build_menu = tk.Menu(build_mb, tearoff=False)
-        build_menu.add_command(label='Compile', command=lambda: self.execute_build('compile'))
-        build_menu.add_command(label='Run', command=lambda: self.execute_build('run'))
-        build_menu.add_command(label='Compile && Run', command=lambda: self.execute_build('compile_run'))
-        build_mb.config(menu=build_menu)
-        build_mb.pack(side='left', padx=6, pady=6)
-        # Keep a Stop button nearby
+        # Build button directly compiles and runs code
+        btn_build = tk.Button(side_frame, text='Build', command=lambda: self.execute_build('compile_run'))
+        btn_build.pack(side='left', padx=6, pady=6)
+        # Stop button
         btn_stop = tk.Button(side_frame, text='Stop', command=self.stop_current_process)
         btn_stop.pack(side='left', padx=6, pady=6)
 
@@ -93,13 +116,20 @@ class CppEditorApp:
         status.pack(side='bottom', fill='x')
 
         # Output console
-        self.output = tk.Text(self.root, height=12, bg='#111111', fg='#ffffff', font=('Consolas', 11))
+        output_cfg = self.config.get('output', {})
+        output_height = output_cfg.get('height', 12)
+        output_bg = output_cfg.get('bg', '#111111')
+        output_fg = output_cfg.get('fg', '#ffffff')
+        output_font = output_cfg.get('font', 'Consolas')
+        output_font_size = output_cfg.get('font_size', 11)
+        self.output = tk.Text(self.root, height=output_height, bg=output_bg, fg=output_fg, font=(output_font, output_font_size))
         self.output.pack(fill='both')
         self.output.insert('end', 'Output console available.\n')
         self.output.configure(state='disabled')
 
         # Syntax highlight tags (base config)
-        self.text.tag_configure('error_line', background='#420000')
+        syntax_colors = self.config.get('syntax', {}).get('colors', {})
+        self.text.tag_configure('error_line', background=syntax_colors.get('error_line', '#420000'))
 
         # Try to use external SyntaxHighlighter (Pygments) if available
         try:
@@ -114,10 +144,13 @@ class CppEditorApp:
             self.highlighter = None
         # Basic tags fallback if no Pygments-based highlighter
         if not self.highlighter:
-            self.text.tag_configure('keyword', foreground='blue')
-            self.text.tag_configure('type', foreground='#1c9d00')
-            self.text.tag_configure('string', foreground='#d14')
-            self.text.tag_configure('comment', foreground='#888')
+            self.text.tag_configure('keyword', foreground=syntax_colors.get('keyword', 'blue'))
+            self.text.tag_configure('type', foreground=syntax_colors.get('type', '#1c9d00'))
+            self.text.tag_configure('std_type', foreground=syntax_colors.get('std_type', '#267f99'))
+            self.text.tag_configure('string', foreground=syntax_colors.get('string', '#d14'))
+            self.text.tag_configure('comment', foreground=syntax_colors.get('comment', '#888'))
+            self.text.tag_configure('preprocessor', foreground=syntax_colors.get('preprocessor', '#9b4f96'))
+            self.text.tag_configure('number', foreground=syntax_colors.get('number', '#098658'))
 
     def _bind_events(self):
         # Bind key events to set dirty flag, update highlights, and show suggestions
@@ -127,10 +160,19 @@ class CppEditorApp:
         self.text.bind('<Button-1>', lambda e: self.update_line_numbers())
         self.text.bind('<MouseWheel>', lambda e: self.update_line_numbers())
         self.text.bind('<Return>', lambda e: self.update_line_numbers())
+        self.text.bind('<BackSpace>', lambda e: self.root.after(10, self.update_line_numbers))
+        self.text.bind('<Delete>', lambda e: self.root.after(10, self.update_line_numbers))
+        # Sync line number scroll with text widget
+        self.text.config(yscrollcommand=self._on_text_scroll)
         # No language combobox: always use C++ highlighting
 
         # Bind close event to check for unsaved changes
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
+
+    def _on_text_scroll(self, *args):
+        """Sync line numbers scrolling with text widget."""
+        self.line_numbers.yview_moveto(args[0])
+        self.update_line_numbers()
 
     def new_file(self):
         if not self.confirm_discard():
@@ -198,11 +240,21 @@ class CppEditorApp:
         return self.text.get('1.0', 'end-1c')
 
     def update_line_numbers(self):
+        """Update line numbers with dynamic width adjustment."""
         content = self.get_text().splitlines()
-        width = len(str(max(1, len(content))))
+        if not content:
+            content = ['']
+        num_lines = len(content)
+        width = len(str(num_lines))
+        
+        # Update line_numbers widget width if needed
+        current_width = self.line_numbers.cget('width')
+        if width != current_width:
+            self.line_numbers.config(width=max(3, width + 1))
+        
         self.line_numbers.config(state='normal')
         self.line_numbers.delete('1.0', 'end')
-        for i in range(1, len(content) + 1):
+        for i in range(1, num_lines + 1):
             self.line_numbers.insert('end', f'{i}'.rjust(width) + '\n')
         self.line_numbers.config(state='disabled')
 
@@ -223,29 +275,59 @@ class CppEditorApp:
                 self.highlighter.highlight_all(language=lang)
             return
 
-        # Fallback: basic regex highlight
+        # Fallback: comprehensive regex-based C++ highlight using config
         text = self.get_text()
-        self.text.tag_remove('keyword', '1.0', 'end')
-        self.text.tag_remove('type', '1.0', 'end')
-        self.text.tag_remove('string', '1.0', 'end')
-        self.text.tag_remove('comment', '1.0', 'end')
-        # Basic highlights
-        keywords = r'\b(if|else|for|while|return|break|continue|goto|switch|case|default|namespace|using|class|struct|template|typename|public|private|protected|virtual|override|constexpr)\b'
-        types = r'\b(int|long|short|float|double|char|void|bool|unsigned|signed|size_t|auto)\b'
-        for m in re.finditer(keywords, text):
+        syntax_cfg = self.config.get('syntax', {})
+        
+        # Clear all tags
+        for tag in ('keyword', 'type', 'std_type', 'string', 'comment', 'preprocessor', 'number'):
+            self.text.tag_remove(tag, '1.0', 'end')
+        
+        # Build regex patterns from config
+        keywords = syntax_cfg.get('keywords', [])
+        types = syntax_cfg.get('types', [])
+        std_types = syntax_cfg.get('std_types', [])
+        
+        if keywords:
+            keywords_pattern = r'\b(' + '|'.join(re.escape(kw) for kw in keywords) + r')\b'
+            for m in re.finditer(keywords_pattern, text):
+                start = f'1.0+{m.start()}c'
+                end = f'1.0+{m.end()}c'
+                self.text.tag_add('keyword', start, end)
+        
+        if types:
+            types_pattern = r'\b(' + '|'.join(re.escape(t) for t in types) + r')\b'
+            for m in re.finditer(types_pattern, text):
+                start = f'1.0+{m.start()}c'
+                end = f'1.0+{m.end()}c'
+                self.text.tag_add('type', start, end)
+        
+        if std_types:
+            std_types_pattern = r'\b(std::)?(' + '|'.join(re.escape(t) for t in std_types) + r')\b'
+            for m in re.finditer(std_types_pattern, text):
+                start = f'1.0+{m.start()}c'
+                end = f'1.0+{m.end()}c'
+                self.text.tag_add('std_type', start, end)
+        
+        # Preprocessor directives
+        for m in re.finditer(r'^\s*#\s*(include|define|undef|ifdef|ifndef|if|elif|else|endif|error|pragma|line|warning)\b.*', text, re.MULTILINE):
             start = f'1.0+{m.start()}c'
             end = f'1.0+{m.end()}c'
-            self.text.tag_add('keyword', start, end)
-        for m in re.finditer(types, text):
+            self.text.tag_add('preprocessor', start, end)
+        
+        # Numbers (integers, floats, hex, binary)
+        for m in re.finditer(r'\b(0x[0-9a-fA-F]+|0b[01]+|\d+\.\d+[fFlL]?|\d+[uUlL]*)\b', text):
             start = f'1.0+{m.start()}c'
             end = f'1.0+{m.end()}c'
-            self.text.tag_add('type', start, end)
-        # strings
-        for m in re.finditer(r'(".*?"|\'.*?\')', text):
+            self.text.tag_add('number', start, end)
+        
+        # Strings (must come before comments to avoid conflicts)
+        for m in re.finditer(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', text):
             start = f'1.0+{m.start()}c'
             end = f'1.0+{m.end()}c'
             self.text.tag_add('string', start, end)
-        # comments // and /* */
+        
+        # Comments (single-line and multi-line)
         for m in re.finditer(r'//.*', text):
             start = f'1.0+{m.start()}c'
             end = f'1.0+{m.end()}c'
@@ -306,18 +388,20 @@ class CppEditorApp:
             try:
                 proc = subprocess.Popen([path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 self.current_process = proc
+                timeout_val = self.config.get('compiler', {}).get('timeout', 20)
                 try:
-                    stdout, stderr = proc.communicate(timeout=20)
+                    stdout, stderr = proc.communicate(timeout=timeout_val)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     stdout, stderr = proc.communicate()
                     self.current_process = None
-                    self.output_write('\nProgram timed out (20s).\n')
+                    self.output_write(f'\nProgram timed out ({timeout_val}s).\n')
                     self.status_var.set('Program timed out')
                     return
                 self.current_process = None
             except subprocess.TimeoutExpired:
-                self.output_write('\nProgram timed out (20s).\n')
+                timeout_val = self.config.get('compiler', {}).get('timeout', 20)
+                self.output_write(f'\nProgram timed out ({timeout_val}s).\n')
                 self.status_var.set('Program timed out')
                 return
             except Exception as e:
@@ -338,7 +422,10 @@ class CppEditorApp:
         # Compile phase (for compile and compile_run modes)
         base, ext = os.path.splitext(path)
         out_exe = base
-        cmd = ['g++', '-std=c++17', path, '-o', out_exe]
+        compiler_cfg = self.config.get('compiler', {})
+        compiler_cmd = compiler_cfg.get('command', 'g++')
+        compiler_flags = compiler_cfg.get('flags', ['-std=c++17'])
+        cmd = [compiler_cmd] + compiler_flags + [path, '-o', out_exe]
         
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -389,18 +476,20 @@ class CppEditorApp:
             try:
                 runproc = subprocess.Popen([out_exe], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 self.current_process = runproc
+                timeout_val = self.config.get('compiler', {}).get('timeout', 20)
                 try:
-                    out, err = runproc.communicate(timeout=20)
+                    out, err = runproc.communicate(timeout=timeout_val)
                 except subprocess.TimeoutExpired:
                     runproc.kill()
                     out, err = runproc.communicate()
                     self.current_process = None
-                    self.output_write('\nProgram timed out (20s).\n')
+                    self.output_write(f'\nProgram timed out ({timeout_val}s).\n')
                     self.status_var.set('Program timed out')
                     return
                 self.current_process = None
             except subprocess.TimeoutExpired:
-                self.output_write('\nProgram timed out (20s).\n')
+                timeout_val = self.config.get('compiler', {}).get('timeout', 20)
+                self.output_write(f'\nProgram timed out ({timeout_val}s).\n')
                 self.status_var.set('Program timed out')
                 return
             except Exception as e:
@@ -565,7 +654,10 @@ class CppEditorApp:
         try:
             # Create a named temp source file
             import tempfile as _tempfile
-            tf = _tempfile.NamedTemporaryFile(delete=False, suffix='.cpp', prefix='scc_', mode='w', encoding='utf-8')
+            temp_cfg = self.config.get('temp_files', {})
+            prefix = temp_cfg.get('prefix', 'scc_')
+            suffix = temp_cfg.get('suffix', '.cpp')
+            tf = _tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix=prefix, mode='w', encoding='utf-8')
             tf.write(txt)
             tf.flush()
             tf.close()

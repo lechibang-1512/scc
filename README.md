@@ -169,58 +169,153 @@ Notes
 
 License
 MIT
-# C++ Editor & Compiler (Python Tkinter)
+# C++ Editor & Compiler (SCC)
 
-This small tool is a C++ code editor and compiler implemented in Python using Tkinter.
+A lightweight C++ code editor and compiler implemented in Python using Tkinter with comprehensive syntax highlighting and configuration support.
 
-Features
-- New/Open/Save/Save As
-- Basic syntax highlighting for C++ (keywords, types, strings, comments)
-- Line numbers
-- Compile with g++ and show compiler errors
-- Run the compiled executable and capture stdout/stderr
+## Features
+
+- **File Operations**: New, Open, Save, Save As
+- **Advanced Line Numbers**: Dynamic width adjustment, scroll synchronization
+- **Comprehensive C++ Syntax Highlighting**:
+  - All C++ keywords (C++17/20 compatible)
+  - Built-in types and standard library types
+  - Preprocessor directives
+  - Numbers (integers, floats, hex, binary)
+  - Strings and comments
+  - Configurable colors via JSON
+- **Build System**:
+  - Compile with g++ (configurable compiler and flags)
+  - Run compiled executables
+  - Compile & Run in one step
+  - Stop running processes
+- **Smart Features**:
+  - Inline code suggestions (C++ keywords, file symbols, std names)
+  - Quick diagnostics (unmatched braces/parentheses, unclosed quotes)
+  - Error highlighting in editor
+  - Unsaved changes protection
+- **Fully Configurable**: All settings stored in `config.json`
+
+## Requirements
 
 - Python 3.8+
 - g++ (GNU C++ compiler)
-- Tkinter (for the GUI; on Linux, install python3-tk or equivalent)
-- Pygments (for robust syntax highlighting). Install via `pip install -r requirements.txt`.
-Requirements
-- Python 3.8+
-- g++ (GNU C++ compiler)
-- Tkinter (for the GUI; on Linux, install python3-tk or equivalent)
-- Pygments (optional, for robust syntax highlighting). Install via `pip install -r requirements.txt`.
+- Tkinter (usually included with Python; on Linux: `python3-tk`)
+- Pygments (optional, for enhanced syntax highlighting): `pip install -r requirements.txt`
 
-Tip: Use a virtual environment. Always activate `.venv` before installing requirements or running the editor:
+## Installation
+
 ```bash
+# Clone or download the repository
+cd scc
+
+# (Optional) Create a virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
-- Python 3.8+
-- g++ (GNU C++ compiler)
-- Tkinter (for the GUI; on Linux, install python3-tk or equivalent)
-- Pygments (for robust syntax highlighting). Install via `pip install -r requirements.txt`.
 
-Usage
-1. Run the editor:
+## Usage
+
 ```bash
-python3 cpp_editor.py
+python3 scc.py
 ```
-2. Use File -> Open to open `hello.cpp` or create a new file.
-3. Save your file (`.cpp`) then use Build -> Compile to compile it.
-4. On successful compilation use Build -> Run to run or Build -> Compile & Run to do both.
 
-- On Linux, executables will be created next to the source file with the same base name.
-- The app performs minimal syntax highlighting and error parsing; it aims to be simple and educational.
-Notes
-- On Linux, executables will be created next to the source file with the same base name.
-- The app can use Pygments for improved syntax highlighting if `Pygments` is installed; otherwise it falls back to a simple regex-based highlighter.
-- Features added: C++ highlighting, Stop button (to kill compile/run processes), partial visible-region highlighting for performance, and unsaved-changes detection with prompt on close/new/open.
+### Quick Start
 
-- In-line suggestions: type an identifier prefix to see possible completions; accept with Tab or Enter, navigate with Up/Down. Suggestions include C++ keywords, identifiers found in the current file, and a limited set of common std names.
- - Quick diagnostics and quick fixes: as-you-type diagnosis detects unmatched braces/parentheses and unclosed quotes, highlights the problematic lines, and suggests simple quick fixes (e.g., Add ';') which can be accepted in-place via the suggestion box.
-- On Linux, executables will be created next to the source file with the same base name.
-- The app performs minimal syntax highlighting and error parsing; it aims to be simple and educational.
+1. Open the editor with `python3 scc.py`
+2. Use **File → New/Open** to create or open C++ files
+3. Use the **Build** toolbar button to:
+   - **Compile**: Build your code
+   - **Run**: Execute the last compiled binary
+   - **Compile && Run**: Build and execute in one step
+4. Use **Stop** to terminate running processes
 
-License
-MIT; adapt & reuse as you like.
+## Configuration
+
+All settings are stored in `config.json`. You can customize:
+
+### Editor Settings
+```json
+{
+  "editor": {
+    "font": "Consolas",
+    "font_size": 12,
+    "wrap": "none",
+    "line_number_width": 5,
+    "line_number_bg": "#f0f0f0",
+    "line_number_fg": "gray"
+  }
+}
+```
+
+### Compiler Settings
+```json
+{
+  "compiler": {
+    "command": "g++",
+    "flags": ["-std=c++17", "-Wall"],
+    "timeout": 20
+  }
+}
+```
+
+### Syntax Highlighting
+```json
+{
+  "syntax": {
+    "keywords": ["if", "else", "for", "while", ...],
+    "types": ["int", "float", "bool", ...],
+    "std_types": ["string", "vector", "map", ...],
+    "colors": {
+      "keyword": "#0000ff",
+      "type": "#1c9d00",
+      "comment": "#888888",
+      ...
+    }
+  }
+}
+```
+
+See `config.json` for the complete configuration schema.
+
+## Features in Detail
+
+### Line Numbering
+- Dynamic width adjustment based on file size
+- Synchronized scrolling with editor
+- Updates automatically on text changes
+
+### Syntax Highlighting
+- Over 80 C++ keywords supported
+- Standard library types recognition
+- Preprocessor directive highlighting
+- Number literal detection (int, float, hex, binary)
+- Proper string and comment parsing
+- Uses Pygments when available, falls back to regex-based highlighting
+
+### Build System
+- Unified build execution system
+- Configurable compiler and flags
+- Temporary file management for unsaved code
+- Error parsing and line highlighting
+- Configurable execution timeout
+
+### Code Suggestions
+- Context-aware C++ keyword completion
+- File symbol detection
+- Standard library type suggestions
+- Quick fixes for common errors
+
+## Notes
+
+- Executables are created next to the source file (or as temporary files)
+- The editor supports C++ only
+- For advanced features (LSP, debugging), consider integrating with `clangd`
+- Temporary files are automatically cleaned up
+
+## License
+
+MIT License - adapt and reuse as you like.
