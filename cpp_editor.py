@@ -54,9 +54,7 @@ class CppEditorApp:
         menubar.add_cascade(label='File', menu=filemenu)
 
         buildmenu = tk.Menu(menubar, tearoff=False)
-        buildmenu.add_command(label='Compile', command=self.compile_code)
-        buildmenu.add_command(label='Run', command=self.run_program)
-        buildmenu.add_command(label='Compile & Run', command=self.compile_and_run)
+        buildmenu.add_command(label='Run', command=self.compile_and_run)
         menubar.add_cascade(label='Build', menu=buildmenu)
 
         self.root.config(menu=menubar)
@@ -77,12 +75,8 @@ class CppEditorApp:
 
         side_frame = tk.Frame(self.root)
         side_frame.pack(fill='x')
-        btn_compile = tk.Button(side_frame, text='Compile', command=self.compile_code)
-        btn_compile.pack(side='left', padx=6, pady=6)
-        btn_run = tk.Button(side_frame, text='Run', command=self.run_program)
+        btn_run = tk.Button(side_frame, text='Run', command=self.compile_and_run)
         btn_run.pack(side='left', padx=6, pady=6)
-        btn_crun = tk.Button(side_frame, text='Compile && Run', command=self.compile_and_run)
-        btn_crun.pack(side='left', padx=6, pady=6)
         btn_stop = tk.Button(side_frame, text='Stop', command=self.stop_current_process)
         btn_stop.pack(side='left', padx=6, pady=6)
 
