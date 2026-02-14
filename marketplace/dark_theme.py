@@ -45,20 +45,25 @@ class DarkThemeExtension(BaseExtension):
     tags = ["theme", "dark mode", "colors"]
 
     def __init__(self):
+        super().__init__()
         self._menu: tk.Menu | None = None
+        self._menubar = None
         self._dark_active = False
+        self._status_label = None  # cached reference to status bar label
 
     def activate(self, editor):
+        # Cache the status bar label reference (avoid iterating pack_slaves on every toggle)
+        self._status_label = self._find_status_label(editor)
         self._apply(editor, _DARK)
         self._dark_active = True
 
     def deactivate(self, editor):
         self._apply(editor, _LIGHT)
         self._dark_active = False
+        self._status_label = None
         # Remove the Theme cascade from the menubar
-        if self._menu and hasattr(self, '_menubar') and self._menubar:
+        if self._menu and self._menubar:
             try:
-                # Find and delete the "Theme" cascade entry
                 last = self._menubar.index("end")
                 if last is not None:
                     for i in range(int(last), -1, -1):
@@ -75,8 +80,6 @@ class DarkThemeExtension(BaseExtension):
             self._menubar = None
 
     def contribute_menu(self, editor, menubar):
-        # menubar is the actual tk.Menu widget
-        import tkinter as tk
         self._menu = tk.Menu(menubar, tearoff=False)
         self._menu.add_command(
             label="Toggle Dark/Light",
@@ -94,7 +97,18 @@ class DarkThemeExtension(BaseExtension):
             self._dark_active = True
 
     @staticmethod
-    def _apply(editor, scheme):
+    def _find_status_label(editor):
+        """Find and cache the status bar label widget (one-time lookup)."""
+        for w in editor.root.pack_slaves():
+            if isinstance(w, tk.Label):
+                try:
+                    if str(w.cget("textvariable")) == str(editor.status_var):
+                        return w
+                except Exception:
+                    pass
+        return None
+
+    def _apply(self, editor, scheme):
         try:
             editor.text.config(
                 bg=scheme["bg"], fg=scheme["fg"],
@@ -103,13 +117,11 @@ class DarkThemeExtension(BaseExtension):
             )
             editor.line_numbers.config(bg=scheme["line_bg"], fg=scheme["line_fg"])
             editor.output.config(bg=scheme["output_bg"], fg=scheme["output_fg"])
-            # status bar — find by status_var
-            for w in editor.root.pack_slaves():
-                if isinstance(w, tk.Label):
-                    try:
-                        if str(w.cget("textvariable")) == str(editor.status_var):
-                            w.config(bg=scheme["status_bg"], fg=scheme["status_fg"])
-                    except Exception:
-                        pass
+            # Use cached status label reference instead of iterating pack_slaves
+            if self._status_label:
+                try:
+                    self._status_label.config(bg=scheme["status_bg"], fg=scheme["status_fg"])
+                except Exception:
+                    pass
         except Exception:
             pass

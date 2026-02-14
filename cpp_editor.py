@@ -90,7 +90,8 @@ class CppEditorApp:
         self.line_numbers = tk.Text(top_frame, width=5, padx=3, takefocus=0, bd=0, bg='#f0f0f0', fg='gray', state='disabled')
         self.line_numbers.pack(side='left', fill='y')
 
-        self.text = tk.Text(top_frame, wrap='none', undo=True, font=('Consolas', 12))
+        self.text = tk.Text(top_frame, wrap='none', undo=True, maxundo=50,
+                           autoseparators=False, font=('Consolas', 12))
         self.text.pack(side='left', fill='both', expand=True)
 
         xscroll = tk.Scrollbar(self.root, orient='horizontal', command=self.text.xview)
@@ -129,12 +130,11 @@ class CppEditorApp:
         # Syntax highlight tags (base config)
         self.text.tag_configure('error_line', background='#420000')
 
-        # Try to use external SyntaxHighlighter (Pygments) if available
+        # Try to use external SyntaxHighlighter (lazy Pygments loading)
         try:
-            import syntax_highlighter as sh
-            if getattr(sh, 'PYGMENTS_AVAILABLE', False):
-                from syntax_highlighter import SyntaxHighlighter
-                self.highlighter = SyntaxHighlighter(self.text)
+            from syntax_highlighter import SyntaxHighlighter, PYGMENTS_AVAILABLE
+            self.highlighter = SyntaxHighlighter(self.text)
+            if PYGMENTS_AVAILABLE:
                 self.highlighter.create_tags()
             else:
                 self.highlighter = None
@@ -150,7 +150,10 @@ class CppEditorApp:
     def _bind_events(self):
         self.text.bind('<KeyRelease>', self._on_key_release)
         self.text.bind('<Button-1>', lambda e: self.update_line_numbers())
-        self.text.bind('<MouseWheel>', lambda e: self.update_line_numbers())
+        # Scroll events trigger highlight for virtualized tags + line numbers
+        self.text.bind('<MouseWheel>', lambda e: self.update_highlight())
+        self.text.bind('<Button-4>', lambda e: self.update_highlight())
+        self.text.bind('<Button-5>', lambda e: self.update_highlight())
         self.text.bind('<Return>', lambda e: self.update_line_numbers())
         self.lang_combo.bind('<<ComboboxSelected>>', lambda e: self.update_highlight())
         # Bind close event to check for unsaved changes
@@ -206,6 +209,11 @@ int main() {
         if path:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 self.set_text(f.read())
+            # Clear undo history — the set_text insertions waste memory
+            try:
+                self.text.edit_reset()
+            except Exception:
+                pass
             self.current_file = path
             self.status_var.set(f'Opened {os.path.basename(path)}')
             if hasattr(self, 'ext_manager') and self.ext_manager:
@@ -261,9 +269,14 @@ int main() {
         self.highlight_timer = self.root.after(300, self._highlight_and_lines)
 
     def _highlight_and_lines(self):
-        """Batched debounce callback: update both highlighting and line numbers."""
+        """Batched debounce callback: update highlighting, line numbers, and insert undo separator."""
         self.update_line_numbers()
         self._highlight()
+        # Insert a manual undo separator (autoseparators=False)
+        try:
+            self.text.edit_separator()
+        except Exception:
+            pass
 
     def _highlight(self):
         # Use external Pygments-based SyntaxHighlighter if available
@@ -535,11 +548,12 @@ int main() {
 
     def output_write(self, text, clear=False):
         def _write():
-            if clear:
-                self.output.config(state='normal')
-                self.output.delete('1.0', 'end')
-                self.output.config(state='disabled')
             self.output.config(state='normal')
+            if clear:
+                self.output.delete('1.0', 'end')
+            # Cap output buffer: trim oldest 500 lines when exceeding 2000
+            if int(float(self.output.index('end'))) > 2000:
+                self.output.delete('1.0', '500.0')
             self.output.insert('end', text)
             self.output.see('end')
             self.output.config(state='disabled')

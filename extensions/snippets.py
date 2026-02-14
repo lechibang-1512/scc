@@ -2,7 +2,7 @@
 Snippets — Extension for SCC Editor
 
 Type a trigger word and press Tab to expand into a code template.
-Supports C++ snippets: forr, main, cls, iff, cout, inc
+Supports C++ snippets: forr, main, cls, iff, cout, inc, whl, sw
 """
 from extension_api import BaseExtension
 
@@ -27,6 +27,9 @@ class SnippetsExtension(BaseExtension):
     category = "Editing"
     tags = ["snippets", "templates", "productivity"]
 
+    def __init__(self):
+        super().__init__()
+
     def activate(self, editor):
         self.register_keybinding(editor, "<Tab>", lambda e: self._on_tab(editor, e))
         self.show_notification(editor, "Snippets active — type a trigger + Tab")
@@ -37,11 +40,10 @@ class SnippetsExtension(BaseExtension):
     def _on_tab(self, editor, event):
         widget = editor.text
         try:
-            # get word before cursor
             cursor = widget.index("insert")
             line_start = widget.index(f"{cursor} linestart")
             line_text = widget.get(line_start, cursor)
-            # extract last "word"
+            # Extract last word (fast reverse scan)
             word = ""
             for ch in reversed(line_text):
                 if ch.isalnum() or ch == "_":
@@ -49,10 +51,8 @@ class SnippetsExtension(BaseExtension):
                 else:
                     break
             if word in _SNIPPETS:
-                # delete trigger word
                 start = widget.index(f"insert - {len(word)}c")
                 widget.delete(start, "insert")
-                # insert snippet
                 widget.insert("insert", _SNIPPETS[word])
                 return "break"
         except Exception:

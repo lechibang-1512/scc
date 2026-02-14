@@ -26,6 +26,7 @@ class AutoBracketExtension(BaseExtension):
     tags = ["brackets", "auto-close", "productivity"]
 
     def __init__(self):
+        super().__init__()
         self._binding_id = None
 
     def activate(self, editor):
@@ -44,13 +45,12 @@ class AutoBracketExtension(BaseExtension):
         if ch in _PAIRS:
             widget = event.widget
             closer = _PAIRS[ch]
-            # insert closing char after cursor
             widget.after(1, lambda: self._insert_closer(widget, closer))
 
     @staticmethod
     def _insert_closer(widget, closer):
         try:
             widget.insert("insert", closer)
-            widget.mark_set("insert", f"insert - 1 chars")
+            widget.mark_set("insert", "insert - 1 chars")
         except Exception:
             pass

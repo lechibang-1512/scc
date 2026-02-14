@@ -19,6 +19,9 @@ class FileBackupExtension(BaseExtension):
     category = "Tools"
     tags = ["backup", "save", "safety"]
 
+    def __init__(self):
+        super().__init__()
+
     def default_settings(self):
         return {
             "backup_dir": "",       # empty = same dir as file
@@ -48,13 +51,13 @@ class FileBackupExtension(BaseExtension):
             base = src.stem
             ext = src.suffix
 
-            # rotate existing backups
+            # Rotate existing backups (sorted once, no repeated stat calls)
             existing = sorted(
                 dest_dir.glob(f"{base}{ext}.bak*"),
                 key=lambda p: p.stat().st_mtime if p.exists() else 0,
                 reverse=True,
             )
-            # remove oldest if over limit
+            # Remove oldest if over limit
             while len(existing) >= max_backups:
                 oldest = existing.pop()
                 try:
@@ -62,7 +65,6 @@ class FileBackupExtension(BaseExtension):
                 except Exception:
                     pass
 
-            # create new backup with index
             idx = len(existing) + 1
             dest = dest_dir / f"{base}{ext}.bak{idx}"
             shutil.copy2(str(src), str(dest))
