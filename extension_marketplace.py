@@ -34,14 +34,23 @@ BTN_BG        = "#45475a"
 DETAIL_BG     = "#232336"
 
 
-def _deep_configure(widget, **kwargs):
-    """Recursively configure bg/fg on a widget tree."""
+def _card_hover_enter(card, hover_bg):
+    """Change only the card and its direct children bg on hover (no recursion)."""
     try:
-        widget.configure(**kwargs)
+        card.configure(bg=hover_bg)
     except Exception:
         pass
-    for child in widget.winfo_children():
-        _deep_configure(child, **kwargs)
+    for child in card.winfo_children():
+        try:
+            child.configure(bg=hover_bg)
+        except Exception:
+            pass
+        # One level of nesting for header/left/right frames
+        for grandchild in child.winfo_children():
+            try:
+                grandchild.configure(bg=hover_bg)
+            except Exception:
+                pass
 
 
 class ExtensionMarketplace(tk.Toplevel):
@@ -145,10 +154,14 @@ class ExtensionMarketplace(tk.Toplevel):
         self._scrollbar.pack(side="right", fill="y")
 
         self._canvas.bind("<Configure>", self._on_canvas_resize)
-        # mouse wheel scroll (Linux)
-        self.bind_all("<Button-4>", lambda e: self._canvas.yview_scroll(-3, "units"))
-        self.bind_all("<Button-5>", lambda e: self._canvas.yview_scroll(3, "units"))
-        self.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Scoped scroll bindings (on self, not bind_all which leaks to other windows)
+        self.bind("<Button-4>", lambda e: self._canvas.yview_scroll(-3, "units"))
+        self.bind("<Button-5>", lambda e: self._canvas.yview_scroll(3, "units"))
+        self.bind("<MouseWheel>", self._on_mousewheel)
+        # Also bind on canvas and inner frame for scroll to work
+        self._canvas.bind("<Button-4>", lambda e: self._canvas.yview_scroll(-3, "units"))
+        self._canvas.bind("<Button-5>", lambda e: self._canvas.yview_scroll(3, "units"))
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel)
 
         # Bottom status
         self._status = tk.Label(self, text="", bg=BG, fg=FG_DIM,
@@ -190,9 +203,10 @@ class ExtensionMarketplace(tk.Toplevel):
             empty.pack()
 
         count = len(items)
-        # update tab label counts
+        # Update tab label counts (use cached marketplace listing)
         installed_count = len(self.manager.extensions)
-        available_count = len(self.manager.list_marketplace())
+        available_list = self.manager.list_marketplace()
+        available_count = len(available_list)
         self._tab_btns["installed"].config(text=f"📦 Installed ({installed_count})")
         self._tab_btns["available"].config(text=f"🌐 Available ({available_count})")
         self._status.config(
@@ -232,8 +246,8 @@ class ExtensionMarketplace(tk.Toplevel):
         card = tk.Frame(self._inner, bg=BG_CARD,
                         highlightbackground=BORDER, highlightthickness=1)
         card.pack(fill="x", pady=4, ipady=6)
-        card.bind("<Enter>", lambda e, c=card: _deep_configure(c, bg=BG_CARD_HOVER))
-        card.bind("<Leave>", lambda e, c=card: _deep_configure(c, bg=BG_CARD))
+        card.bind("<Enter>", lambda e, c=card: _card_hover_enter(c, BG_CARD_HOVER))
+        card.bind("<Leave>", lambda e, c=card: _card_hover_enter(c, BG_CARD))
 
         left = tk.Frame(card, bg=BG_CARD)
         left.pack(side="left", fill="both", expand=True, padx=12, pady=4)
@@ -292,8 +306,8 @@ class ExtensionMarketplace(tk.Toplevel):
         card = tk.Frame(self._inner, bg=BG_CARD,
                         highlightbackground=BORDER, highlightthickness=1)
         card.pack(fill="x", pady=4, ipady=6)
-        card.bind("<Enter>", lambda e, c=card: _deep_configure(c, bg=BG_CARD_HOVER))
-        card.bind("<Leave>", lambda e, c=card: _deep_configure(c, bg=BG_CARD))
+        card.bind("<Enter>", lambda e, c=card: _card_hover_enter(c, BG_CARD_HOVER))
+        card.bind("<Leave>", lambda e, c=card: _card_hover_enter(c, BG_CARD))
 
         left = tk.Frame(card, bg=BG_CARD)
         left.pack(side="left", fill="both", expand=True, padx=12, pady=4)
@@ -427,10 +441,5 @@ class ExtensionMarketplace(tk.Toplevel):
                                    parent=self)
 
     def destroy(self):
-        try:
-            self.unbind_all("<MouseWheel>")
-            self.unbind_all("<Button-4>")
-            self.unbind_all("<Button-5>")
-        except Exception:
-            pass
+        # No need to unbind_all — we used scoped bind() on self
         super().destroy()

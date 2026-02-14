@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox
 from tkinter import ttk
 
 from extension_manager import ExtensionManager
-from extension_marketplace import ExtensionMarketplace
+# ExtensionMarketplace is lazy-imported in _open_marketplace() to speed up startup
 
 log = logging.getLogger("scc.editor")
 
@@ -37,6 +37,8 @@ class CppEditorApp:
 
         # Initialize highlight_timer before calling update_highlight in set_text
         self.highlight_timer = None
+        self._last_line_count = 0  # for incremental line-number updates
+        self._cached_lang = None   # cached language for highlighter
         # process management
         self.current_process: Optional[subprocess.Popen] = None
         # track if editor buffer is modified (unsaved changes)
@@ -240,24 +242,33 @@ int main() {
         return self.text.get('1.0', 'end-1c')
 
     def update_line_numbers(self):
-        content = self.get_text().splitlines()
-        width = len(str(max(1, len(content))))
+        # Incremental: skip full rebuild if line count hasn't changed
+        content = self.get_text()
+        line_count = content.count('\n') + 1
+        if line_count == self._last_line_count:
+            return
+        self._last_line_count = line_count
+        width = len(str(max(1, line_count)))
         self.line_numbers.config(state='normal')
         self.line_numbers.delete('1.0', 'end')
-        for i in range(1, len(content) + 1):
-            self.line_numbers.insert('end', f'{i}'.rjust(width) + '\n')
+        nums = '\n'.join(str(i).rjust(width) for i in range(1, line_count + 1)) + '\n'
+        self.line_numbers.insert('end', nums)
         self.line_numbers.config(state='disabled')
 
     def update_highlight(self):
         if self.highlight_timer:
             self.root.after_cancel(self.highlight_timer)
-        self.highlight_timer = self.root.after(150, self._highlight)
+        self.highlight_timer = self.root.after(300, self._highlight_and_lines)
+
+    def _highlight_and_lines(self):
+        """Batched debounce callback: update both highlighting and line numbers."""
+        self.update_line_numbers()
+        self._highlight()
 
     def _highlight(self):
         # Use external Pygments-based SyntaxHighlighter if available
         if self.highlighter:
-            # make sure prior tags are cleared by highlighter
-            lang = getattr(self, 'lang_var', None) and self.lang_var.get() or 'cpp'
+            lang = self.lang_var.get() if hasattr(self, 'lang_var') else 'cpp'
             try:
                 # Prefer highlighting visible region for performance
                 self.highlighter.highlight_visible_region(language=lang)
@@ -539,6 +550,8 @@ int main() {
 
     # ── Extension helpers ────────────────────────────────────────
     def _open_marketplace(self):
+        # Lazy import: only load marketplace module when user opens the dialog
+        from extension_marketplace import ExtensionMarketplace
         ExtensionMarketplace(self.root, self.ext_manager)
 
     def _reload_extensions(self):

@@ -13,13 +13,36 @@ try:
     PYGMENTS_AVAILABLE = True
 except Exception:
     PYGMENTS_AVAILABLE = False
-    # Keep imports local in fallback if needed
+    Token = None  # type: ignore
 
 
 class SyntaxHighlighter:
+    # ── Lexer cache (shared across instances) ────────────────────────
+    _lexer_cache: Dict[str, Any] = {}
+
     def __init__(self, text_widget):
         self.text = text_widget
-        # Map pygments token types to tag names
+        # Build a direct Token-type → tag-name lookup for O(1) resolution.
+        # Uses the actual Pygments Token hierarchy instead of string matching.
+        self._token_map: Dict[Any, str] = {}
+        if PYGMENTS_AVAILABLE:
+            self._token_map = {
+                Token.Keyword:          'keyword',
+                Token.Keyword.Type:     'type',
+                Token.Name.Builtin:     'builtin',
+                Token.Name:             'name',
+                Token.Name.Function:    'function',
+                Token.Name.Class:       'class',
+                Token.Literal.String:   'string',
+                Token.Literal.Number:   'number',
+                Token.Comment:          'comment',
+                Token.Comment.Single:   'comment',
+                Token.Comment.Multiline:'comment',
+                Token.Comment.Preproc:  'comment',
+                Token.Operator:         'operator',
+                Token.Punctuation:      'punctuation',
+            }
+        # Legacy string-based map kept only for fallback in _tag_name_for_token
         self.token_to_tag = {
             'Keyword': 'keyword',
             'Name.Builtin': 'builtin',
@@ -33,6 +56,7 @@ class SyntaxHighlighter:
             'Name.Function': 'function',
             'Name.Class': 'class',
         }
+        self._all_tags = tuple(set(self.token_to_tag.values()))
 
     def create_tags(self):
         # Define tags and basic colors; apps can configure them further
@@ -49,15 +73,39 @@ class SyntaxHighlighter:
         self.text.tag_configure('class', foreground='#008fb3')
         self.text.tag_configure('error_line', background='#420000')
 
+    # ── Fast token → tag resolution ──────────────────────────────────
     def _tag_name_for_token(self, ttype) -> str:
-        # ttype is a pygments token object; convert to human form
-        name = str(ttype)
-        # map based on known forms
-        for k, tag in self.token_to_tag.items():
-            # match token suffix if present
-            if name.endswith(k):
+        """Resolve a Pygments token type to a tag name using hierarchy walk."""
+        # Direct lookup first (O(1) for known types)
+        tag = self._token_map.get(ttype)
+        if tag:
+            return tag
+        # Walk up the token type hierarchy (e.g. Token.Keyword.Reserved → Token.Keyword)
+        parent = ttype
+        while parent:
+            tag = self._token_map.get(parent)
+            if tag:
+                # Cache for future hits
+                self._token_map[ttype] = tag
                 return tag
-        return 'name'
+            parent = parent.parent if hasattr(parent, 'parent') else None
+        return ''
+
+    # ── Cached lexer factory ─────────────────────────────────────────
+    @classmethod
+    def _get_lexer(cls, language: str):
+        """Return a cached lexer instance for the given language."""
+        lexer = cls._lexer_cache.get(language)
+        if lexer is None:
+            try:
+                if language == 'cpp' or not language:
+                    lexer = CppLexer()
+                else:
+                    lexer = get_lexer_by_name(language)
+            except Exception:
+                lexer = CppLexer()
+            cls._lexer_cache[language] = lexer
+        return lexer
 
     def highlight_region(self, start_char: int, end_char: int, language: str = 'cpp'):
         """Highlight characters from start_char to end_char in the Text widget using tokens.
@@ -69,59 +117,84 @@ class SyntaxHighlighter:
         text = self.text.get('1.0', 'end-1c')
         selection_text = text[start_char:end_char]
         # remove tags in the region for tags we use
-        for tag in set(self.token_to_tag.values()):
-            self.text.tag_remove(tag, f'1.0+{start_char}c', f'1.0+{end_char}c')
+        start_idx = f'1.0+{start_char}c'
+        end_idx = f'1.0+{end_char}c'
+        for tag in self._all_tags:
+            self.text.tag_remove(tag, start_idx, end_idx)
 
-        try:
-            if language and language != 'cpp':
-                lexer = get_lexer_by_name(language)
-            else:
-                lexer = CppLexer()
-        except Exception:
-            lexer = CppLexer()
+        lexer = self._get_lexer(language)
 
         # Lex selection and apply tags with offsets
         pos_in_full = start_char
         for ttype, value in lex(selection_text, lexer):
-            tag = self._tag_name_for_token(ttype)
             if not value:
+                continue
+            tag = self._tag_name_for_token(ttype)
+            if not tag:
+                pos_in_full += len(value)
                 continue
             start = pos_in_full
             end = pos_in_full + len(value)
             pos_in_full = end
-            start_index = f'1.0+{start}c'
-            end_index = f'1.0+{end}c'
             try:
-                self.text.tag_add(tag, start_index, end_index)
+                self.text.tag_add(tag, f'1.0+{start}c', f'1.0+{end}c')
             except Exception:
                 pass
 
     def highlight_visible_region(self, language: str = 'cpp'):
         """Highlight only the visible region of the text widget, for efficiency.
 
-        Uses Text widget coordinates to compute a visible range.
+        Reads only the visible text instead of the full document.
         """
+        if not PYGMENTS_AVAILABLE:
+            return
         try:
-            # get first and last visible indices
+            # Get first and last visible line indices
             first = self.text.index('@0,0')
             last = self.text.index(f'@0,{self.text.winfo_height()}')
-            # convert to char offsets
-            # index 'line.char' convert to absolute char index by computing content before that index
-            full_text = self.text.get('1.0', 'end-1c')
-            def idx_to_charpos(idx):
-                line, col = map(int, idx.split('.'))
-                # compute char offset
-                lines = full_text.splitlines(True)
-                # clamp
-                if line-1 >= len(lines):
-                    return len(full_text)
-                offset = sum(len(l) for l in lines[:line-1]) + col
-                return offset
-            start_char = idx_to_charpos(first)
-            end_char = idx_to_charpos(last)
-            if end_char < start_char:
-                end_char = start_char + 1
-            self.highlight_region(start_char, end_char, language=language)
+
+            # Extend range slightly for context (tokenizer accuracy)
+            first_line = max(1, int(first.split('.')[0]) - 2)
+            last_line = int(last.split('.')[0]) + 2
+
+            start_idx = f'{first_line}.0'
+            end_idx = f'{last_line}.end'
+
+            # Read only the visible portion of text
+            visible_text = self.text.get(start_idx, end_idx)
+            if not visible_text:
+                return
+
+            # Remove old tags in the visible region
+            for tag in self._all_tags:
+                self.text.tag_remove(tag, start_idx, end_idx)
+
+            lexer = self._get_lexer(language)
+
+            # Lex and apply tags using line.col indices directly
+            line = first_line
+            col = 0
+            for ttype, value in lex(visible_text, lexer):
+                if not value:
+                    continue
+                tag = self._tag_name_for_token(ttype)
+
+                # Calculate start index
+                s_line, s_col = line, col
+
+                # Advance position through the value
+                lines_in_value = value.split('\n')
+                if len(lines_in_value) == 1:
+                    col += len(value)
+                else:
+                    line += len(lines_in_value) - 1
+                    col = len(lines_in_value[-1])
+
+                if tag:
+                    try:
+                        self.text.tag_add(tag, f'{s_line}.{s_col}', f'{line}.{col}')
+                    except Exception:
+                        pass
         except Exception:
             # On any exception, fallback to highlight_all
             self.highlight_all(language=language)
@@ -131,38 +204,31 @@ class SyntaxHighlighter:
 
         This computes token spans and applies text widget tags accordingly.
         """
-        text = self.text.get('1.0', 'end-1c')
-        # remove existing tags (just the ones we use)
-        for tag in set(self.token_to_tag.values()):
+        # Remove existing tags (just the ones we use)
+        for tag in self._all_tags:
             self.text.tag_remove(tag, '1.0', 'end')
         # If no Pygments, bail
         if not PYGMENTS_AVAILABLE:
             return
-        try:
-            if language and language != 'cpp':
-                lexer = get_lexer_by_name(language)
-            else:
-                lexer = CppLexer()
-        except Exception:
-            lexer = CppLexer()
+
+        text = self.text.get('1.0', 'end-1c')
+        lexer = self._get_lexer(language)
 
         pos = 0
         for ttype, value in lex(text, lexer):
-            tag = self._tag_name_for_token(ttype)
             if not value:
                 continue
-            # Calculate start/end index in chars
+            tag = self._tag_name_for_token(ttype)
+            if not tag:
+                pos += len(value)
+                continue
             start = pos
             end = pos + len(value)
             pos = end
-            if tag:
-                start_index = f'1.0+{start}c'
-                end_index = f'1.0+{end}c'
-                try:
-                    self.text.tag_add(tag, start_index, end_index)
-                except Exception:
-                    # In case of widget/position issues, ignore
-                    pass
+            try:
+                self.text.tag_add(tag, f'1.0+{start}c', f'1.0+{end}c')
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

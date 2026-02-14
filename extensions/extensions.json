@@ -1,3 +1,9 @@
 {
-  "dark_theme": true
+  "dark_theme": true,
+  "auto_bracket": true,
+  "line_highlight": true,
+  "snippets": true,
+  "word_count": true,
+  "minimap": true,
+  "file_backup": true
 }

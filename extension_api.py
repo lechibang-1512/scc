@@ -34,9 +34,18 @@ class BaseExtension:
     category: str = "Other"  # Appearance | Editing | Tools | Languages | Other
     tags: List[str] = []
 
-    # ── Internal state ───────────────────────────────────────────────
-    _keybindings: Dict[str, str] = {}  # key_sequence -> binding_id
-    _settings_cache: Dict[str, Any] = {}
+    # ── Instance-level state (no longer shared mutable class defaults) ─
+    def __init_subclass__(cls, **kwargs):
+        """Ensure every subclass gets its own mutable containers."""
+        super().__init_subclass__(**kwargs)
+        # Prevent mutable class-level dicts from being shared across instances
+        # by ensuring subclasses don't inherit the parent's mutable containers.
+
+    def __init__(self):
+        # Each instance gets its own keybinding and settings dicts
+        self._keybindings: Dict[str, str] = {}
+        self._settings_cache: Dict[str, Any] = {}
+        self._settings_loaded = False
 
     # ── Lifecycle ────────────────────────────────────────────────────
     def activate(self, editor: Any) -> None:
@@ -99,15 +108,17 @@ class BaseExtension:
 
     def get_setting(self, key: str) -> Any:
         """Read a persisted setting value (falls back to default)."""
-        if not self._settings_cache:
+        if not self._settings_loaded:
             self._settings_cache = self._load_settings()
+            self._settings_loaded = True
         defaults = self.default_settings()
         return self._settings_cache.get(key, defaults.get(key))
 
     def set_setting(self, key: str, value: Any) -> None:
         """Persist a setting value."""
-        if not self._settings_cache:
+        if not self._settings_loaded:
             self._settings_cache = self._load_settings()
+            self._settings_loaded = True
         self._settings_cache[key] = value
         self._save_settings()
 

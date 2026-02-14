@@ -33,6 +33,11 @@ CATEGORIES = ["All", "Appearance", "Editing", "Tools", "Languages", "Other"]
 class ExtensionInfo:
     """Lightweight record that tracks a loaded extension module."""
 
+    __slots__ = (
+        "module_name", "file_path", "module", "instance",
+        "enabled", "error", "_spec",
+    )
+
     def __init__(
         self,
         module_name: str,
@@ -48,6 +53,7 @@ class ExtensionInfo:
         self.instance = instance
         self.enabled = enabled
         self.error = error  # traceback string if load/activate failed
+        self._spec = None   # kept for lazy loading
 
     # handy metadata proxies
     @property
@@ -91,7 +97,11 @@ class ExtensionManager:
     def __init__(self, editor: Any):
         self.editor = editor
         self.extensions: Dict[str, ExtensionInfo] = {}
+        self._active: List[ExtensionInfo] = []  # pre-filtered active list
         self._shutting_down = False
+        # Marketplace cache
+        self._marketplace_cache: Optional[List[Dict[str, str]]] = None
+        self._marketplace_mtime: float = 0.0
         log.info("Initialising extension subsystem…")
         self._ensure_dirs()
         self._load_state()
@@ -125,6 +135,13 @@ class ExtensionManager:
                 indent=2,
             )
 
+    def _rebuild_active(self):
+        """Rebuild the pre-filtered list of active extensions."""
+        self._active = [
+            info for info in self.extensions.values()
+            if info.enabled and info.instance
+        ]
+
     # ── Discovery & loading ──────────────────────────────────────────
     def discover_and_load(self):
         """Scan extensions/ for .py files, load & activate enabled ones."""
@@ -134,7 +151,22 @@ class ExtensionManager:
                 continue
             if mod_name not in self.extensions:
                 log.debug("Discovered extension file: %s", py_file.name)
-                self._load_extension(py_file)
+                enabled = self._state.get(mod_name, True)
+                if enabled:
+                    self._load_extension(py_file)
+                else:
+                    # Lazy: register without importing for disabled extensions
+                    self._register_lazy(py_file, mod_name)
+        self._rebuild_active()
+
+    def _register_lazy(self, path: Path, mod_name: str):
+        """Register a disabled extension without importing its module."""
+        info = ExtensionInfo(mod_name, path, enabled=False)
+        # Try to get metadata via quick parse (no import)
+        meta = self._quick_parse_meta(path)
+        # Store parsed metadata for display purposes (create a stub)
+        info._spec = meta
+        self.extensions[mod_name] = info
 
     def _load_extension(self, path: Path) -> Optional[ExtensionInfo]:
         mod_name = path.stem
@@ -219,8 +251,16 @@ class ExtensionManager:
     def enable(self, mod_name: str):
         info = self.extensions.get(mod_name)
         if info and not info.enabled:
-            info.enabled = True
-            self._activate(info)
+            # Lazy load: if module wasn't imported yet, load it now
+            if info.module is None and info.instance is None:
+                loaded = self._load_extension(info.file_path)
+                if loaded:
+                    info = loaded
+                    info.enabled = True
+            else:
+                info.enabled = True
+                self._activate(info)
+            self._rebuild_active()
             self._save_state()
 
     def disable(self, mod_name: str):
@@ -228,6 +268,7 @@ class ExtensionManager:
         if info and info.enabled:
             self._deactivate(info)
             info.enabled = False
+            self._rebuild_active()
             self._save_state()
 
     def uninstall(self, mod_name: str):
@@ -250,7 +291,10 @@ class ExtensionManager:
             sys_key = f"ext_{mod_name}"
             sys.modules.pop(sys_key, None)
             del self.extensions[mod_name]
+            self._rebuild_active()
             self._save_state()
+            # Invalidate marketplace cache
+            self._marketplace_cache = None
 
     def install_from_marketplace(self, marketplace_path: Path) -> bool:
         """Copy a .py file from marketplace/ into extensions/ and load it."""
@@ -263,7 +307,10 @@ class ExtensionManager:
             shutil.copy2(str(marketplace_path), str(dest))
             info = self._load_extension(dest)
             if info:
+                self._rebuild_active()
                 self._save_state()
+                # Invalidate marketplace cache
+                self._marketplace_cache = None
                 return True
         except Exception:
             traceback.print_exc()
@@ -298,6 +345,7 @@ class ExtensionManager:
         if was_enabled:
             info.enabled = True
             self._activate(info)
+        self._rebuild_active()
 
     def reload_all(self):
         """Reload every installed extension."""
@@ -328,69 +376,94 @@ class ExtensionManager:
                 except Exception:
                     log.exception("on_shutdown failed for %s", mod_name)
         self._save_state()
+        self._active.clear()
         log.info("All extensions shut down.")
 
-    # ── Event dispatch ───────────────────────────────────────────────
+    # ── Event dispatch (uses pre-filtered active list) ───────────────
     def dispatch_key(self, event) -> Optional[str]:
-        for info in self.extensions.values():
-            if info.enabled and info.instance:
-                try:
-                    result = info.instance.on_key(self.editor, event)
-                    if result == "break":
-                        return "break"
-                except Exception:
-                    traceback.print_exc()
+        for info in self._active:
+            try:
+                result = info.instance.on_key(self.editor, event)
+                if result == "break":
+                    return "break"
+            except Exception:
+                traceback.print_exc()
         return None
 
     def dispatch_file_open(self, path: str):
-        for info in self.extensions.values():
-            if info.enabled and info.instance:
-                try:
-                    info.instance.on_file_open(self.editor, path)
-                except Exception:
-                    traceback.print_exc()
+        for info in self._active:
+            try:
+                info.instance.on_file_open(self.editor, path)
+            except Exception:
+                traceback.print_exc()
 
     def dispatch_file_save(self, path: str):
-        for info in self.extensions.values():
-            if info.enabled and info.instance:
-                try:
-                    info.instance.on_file_save(self.editor, path)
-                except Exception:
-                    traceback.print_exc()
+        for info in self._active:
+            try:
+                info.instance.on_file_save(self.editor, path)
+            except Exception:
+                traceback.print_exc()
 
     def dispatch_build_start(self):
-        for info in self.extensions.values():
-            if info.enabled and info.instance:
-                try:
-                    info.instance.on_build_start(self.editor)
-                except Exception:
-                    traceback.print_exc()
+        for info in self._active:
+            try:
+                info.instance.on_build_start(self.editor)
+            except Exception:
+                traceback.print_exc()
 
     def dispatch_build_end(self, success: bool):
-        for info in self.extensions.values():
-            if info.enabled and info.instance:
-                try:
-                    info.instance.on_build_end(self.editor, success)
-                except Exception:
-                    traceback.print_exc()
+        for info in self._active:
+            try:
+                info.instance.on_build_end(self.editor, success)
+            except Exception:
+                traceback.print_exc()
 
     # ── Marketplace helpers ──────────────────────────────────────────
     def list_marketplace(self) -> List[Dict[str, str]]:
-        """Return metadata about available (not yet installed) marketplace extensions."""
-        results: List[Dict[str, str]] = []
+        """Return metadata about available (not yet installed) marketplace extensions.
+
+        Results are cached and invalidated when the marketplace directory changes.
+        """
+        # Check directory mtime for cache invalidation
+        try:
+            current_mtime = os.path.getmtime(str(MARKETPLACE_DIR))
+        except OSError:
+            current_mtime = 0.0
+
+        if (
+            self._marketplace_cache is not None
+            and current_mtime == self._marketplace_mtime
+        ):
+            # Return cached, but filter out already-installed
+            return [
+                m for m in self._marketplace_cache
+                if m["module_name"] not in self.extensions
+            ]
+
+        # Rebuild cache
+        self._marketplace_mtime = current_mtime
+        all_results: List[Dict[str, str]] = []
         for py_file in sorted(MARKETPLACE_DIR.glob("*.py")):
             mod_name = py_file.stem
-            if mod_name.startswith("_") or mod_name in self.extensions:
+            if mod_name.startswith("_"):
                 continue
             meta = self._quick_parse_meta(py_file)
             meta["module_name"] = mod_name
             meta["file_path"] = str(py_file)
-            results.append(meta)
-        return results
+            all_results.append(meta)
+        self._marketplace_cache = all_results
+
+        return [
+            m for m in all_results
+            if m["module_name"] not in self.extensions
+        ]
 
     @staticmethod
     def _quick_parse_meta(path: Path) -> Dict[str, str]:
-        """Parse class-level metadata from an extension file without importing."""
+        """Parse class-level metadata from an extension file without importing.
+
+        Only reads the first 2KB of the file to avoid unnecessary I/O.
+        """
         meta: Dict[str, str] = {
             "name": path.stem.replace("_", " ").title(),
             "version": "?",
@@ -400,7 +473,9 @@ class ExtensionManager:
             "category": "Other",
         }
         try:
-            src = path.read_text(encoding="utf-8", errors="ignore")
+            # Read only first 2KB — metadata is always near the top
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                src = f.read(2048)
             for key in ("name", "version", "description", "author", "icon", "category"):
                 m = re.search(
                     rf'^\s+{key}\s*[=:]\s*["\'](.+?)["\']',
