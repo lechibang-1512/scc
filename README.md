@@ -48,5 +48,49 @@ Notes
 - On Linux, executables will be created next to the source file with the same base name.
 - The app performs minimal syntax highlighting and error parsing; it aims to be simple and educational.
 
+Extensions
+
+The editor includes an Open VSX-inspired extension system. Extensions are `.py` files that are dynamically loaded/unloaded at runtime.
+
+### Managing Extensions
+
+1. Click **Extensions → Manage Extensions…** to open the marketplace UI.
+2. **Available** tab shows extensions in the `marketplace/` directory ready to install.
+3. **Installed** tab lets you **Enable**, **Disable**, or **Uninstall** each extension.
+4. Click **Extensions → Reload All** to hot-reload all extensions from disk.
+
+### Bundled Sample Extensions (in `marketplace/`)
+
+| Extension | Description |
+|-----------|-------------|
+| Word Count | Live word / line / char count in status bar |
+| Auto Bracket | Auto-closes `()`, `{}`, `[]`, and quotes |
+| Dark Theme | Toggle a dark colour scheme + adds Theme menu |
+
+### Writing Your Own Extension
+
+Create a `.py` file in `marketplace/` (available) or `extensions/` (installed) with:
+
+```python
+from extension_api import BaseExtension
+
+class MyExtension(BaseExtension):
+    name = "My Extension"
+    version = "1.0.0"
+    description = "What it does"
+    author = "Your Name"
+    icon = "⭐"
+
+    def activate(self, editor):
+        # set up your extension here
+        pass
+
+    def deactivate(self, editor):
+        # clean up here
+        pass
+```
+
+See `extension_api.py` for the full list of overridable hooks (`on_key`, `on_file_open`, `on_file_save`, `on_build_start`, `on_build_end`, `contribute_menu`).
+
 License
 MIT; adapt & reuse as you like.

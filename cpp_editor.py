@@ -1,17 +1,10 @@
-#!/usr/bin/env python3
-"""
-A lightweight C++ editor/compile-run app in Python (Tkinter)
-
-Features:
-- New/Open/Save/Save As
-- Basic syntax highlighting for C++
-- Line numbers
-- Compile (g++) with captured compiler errors
-- Run compiled executable (capture stdout/stderr)
-- Compile & Run flow
-"""
+import atexit
+import json
+import logging
 import os
 import re
+import signal
+from pathlib import Path
 from typing import Optional
 import shlex
 import subprocess
@@ -22,15 +15,26 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 
+from extension_manager import ExtensionManager
+from extension_marketplace import ExtensionMarketplace
+
+log = logging.getLogger("scc.editor")
+
+# Persisted window geometry
+_CONFIG_FILE = Path.home() / ".scc_editor.json"
+
 
 class CppEditorApp:
     def __init__(self, root):
+        log.info("Starting C++ Editor & Compiler…")
         self.root = root
         self.root.title('C++ Editor & Compiler')
         self.current_file = None
+        self._closing = False  # guard against double-close
+
         self._build_ui()
         self._bind_events()
-        # Start with an example C++ snippet
+
         # Initialize highlight_timer before calling update_highlight in set_text
         self.highlight_timer = None
         # process management
@@ -40,6 +44,18 @@ class CppEditorApp:
         self.set_text(self.default_cpp())
         self.update_highlight()
 
+        # ── Extension system (fail-safe: broken extension must not block the editor)
+        try:
+            self.ext_manager = ExtensionManager(self)
+        except Exception:
+            log.exception("Extension subsystem failed to initialise")
+            self.ext_manager = None  # editor works without extensions
+
+        # ── Restore saved window geometry ────────────────────────────────
+        self._restore_geometry()
+
+        log.info("Editor ready.")
+
     def _build_ui(self):
         menubar = tk.Menu(self.root)
         filemenu = tk.Menu(menubar, tearoff=False)
@@ -48,7 +64,7 @@ class CppEditorApp:
         filemenu.add_command(label='Save', command=self.save_file)
         filemenu.add_command(label='Save As', command=self.save_file_as)
         filemenu.add_separator()
-        filemenu.add_command(label='Exit', command=self.root.quit)
+        filemenu.add_command(label='Exit', command=self.on_close)
         menubar.add_cascade(label='File', menu=filemenu)
 
         buildmenu = tk.Menu(menubar, tearoff=False)
@@ -56,6 +72,12 @@ class CppEditorApp:
         buildmenu.add_command(label='Run', command=self.run_program)
         buildmenu.add_command(label='Compile & Run', command=self.compile_and_run)
         menubar.add_cascade(label='Build', menu=buildmenu)
+
+        # ── Extensions menu ──────────────────────────────────────
+        extmenu = tk.Menu(menubar, tearoff=False)
+        extmenu.add_command(label='Manage Extensions…', command=self._open_marketplace)
+        extmenu.add_command(label='Reload All', command=self._reload_extensions)
+        menubar.add_cascade(label='Extensions', menu=extmenu)
 
         self.root.config(menu=menubar)
 
@@ -124,14 +146,20 @@ class CppEditorApp:
             self.text.tag_configure('comment', foreground='#888')
 
     def _bind_events(self):
-        self.text.bind('<KeyRelease>', lambda e: (self.set_dirty(True), self.update_highlight()))
+        self.text.bind('<KeyRelease>', self._on_key_release)
         self.text.bind('<Button-1>', lambda e: self.update_line_numbers())
         self.text.bind('<MouseWheel>', lambda e: self.update_line_numbers())
         self.text.bind('<Return>', lambda e: self.update_line_numbers())
         self.lang_combo.bind('<<ComboboxSelected>>', lambda e: self.update_highlight())
-
         # Bind close event to check for unsaved changes
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
+
+    def _on_key_release(self, event):
+        self.set_dirty(True)
+        self.update_highlight()
+        # dispatch to extensions
+        if hasattr(self, 'ext_manager') and self.ext_manager:
+            self.ext_manager.dispatch_key(event)
 
     def default_cpp(self):
         return r"""#include <iostream>
@@ -178,6 +206,8 @@ int main() {
                 self.set_text(f.read())
             self.current_file = path
             self.status_var.set(f'Opened {os.path.basename(path)}')
+            if hasattr(self, 'ext_manager') and self.ext_manager:
+                self.ext_manager.dispatch_file_open(path)
 
     def save_file(self):
         if self.current_file is None:
@@ -187,6 +217,8 @@ int main() {
             f.write(text)
         self.status_var.set(f'Saved {os.path.basename(self.current_file)}')
         self.set_dirty(False)
+        if hasattr(self, 'ext_manager') and self.ext_manager:
+            self.ext_manager.dispatch_file_save(self.current_file)
         return True
 
     def save_file_as(self):
@@ -275,6 +307,8 @@ int main() {
             return
         self.output_clear()
         self.status_var.set('Compiling...')
+        if hasattr(self, 'ext_manager') and self.ext_manager:
+            self.ext_manager.dispatch_build_start()
         threading.Thread(target=self._compile_thread, args=(path,), daemon=True).start()
 
     def _compile_thread(self, path):
@@ -297,9 +331,13 @@ int main() {
             self.output_write(stderr)
             self.status_var.set('Compilation failed')
             self._parse_and_highlight_errors(stderr)
+            if hasattr(self, 'ext_manager') and self.ext_manager:
+                self.ext_manager.dispatch_build_end(False)
         else:
             self.output_write('Compilation succeeded.\n')
             self.status_var.set('Compiled')
+            if hasattr(self, 'ext_manager') and self.ext_manager:
+                self.ext_manager.dispatch_build_end(True)
 
     def _parse_and_highlight_errors(self, stderr_text):
         # Parse messages like: file.cpp:line:col: error: message
@@ -435,12 +473,54 @@ int main() {
                 pass
 
     def on_close(self):
-        if self.confirm_discard():
-            # Good to close
+        """Ordered shutdown: unsaved → kill processes → extensions → geometry → destroy."""
+        if self._closing:
+            return  # already in progress
+        if not self.confirm_discard():
+            return
+
+        self._closing = True
+        log.info("Closing editor…")
+
+        # 1. Kill any running subprocess
+        self.stop_current_process()
+
+        # 2. Shut down extensions
+        if self.ext_manager:
             try:
-                self.root.destroy()
+                self.ext_manager.shutdown_all()
             except Exception:
-                self.root.quit()
+                log.exception("Error during extension shutdown")
+
+        # 3. Save window geometry
+        self._save_geometry()
+
+        # 4. Destroy the window
+        log.info("Goodbye.")
+        try:
+            self.root.destroy()
+        except Exception:
+            self.root.quit()
+
+    # ── Geometry persistence ─────────────────────────────────────────
+    def _save_geometry(self):
+        try:
+            data = {"geometry": self.root.geometry()}
+            _CONFIG_FILE.write_text(json.dumps(data, indent=2))
+            log.debug("Saved geometry: %s", data["geometry"])
+        except Exception:
+            log.debug("Could not save geometry", exc_info=True)
+
+    def _restore_geometry(self):
+        try:
+            if _CONFIG_FILE.exists():
+                data = json.loads(_CONFIG_FILE.read_text())
+                geom = data.get("geometry")
+                if geom:
+                    self.root.geometry(geom)
+                    log.debug("Restored geometry: %s", geom)
+        except Exception:
+            log.debug("Could not restore geometry", exc_info=True)
 
     def output_write(self, text, clear=False):
         def _write():
@@ -457,12 +537,78 @@ int main() {
     def output_clear(self):
         self.root.after(0, lambda: (self.output.config(state='normal'), self.output.delete('1.0', 'end'), self.output.config(state='disabled')))
 
+    # ── Extension helpers ────────────────────────────────────────
+    def _open_marketplace(self):
+        ExtensionMarketplace(self.root, self.ext_manager)
+
+    def _reload_extensions(self):
+        self.ext_manager.reload_all()
+        self.status_var.set('Extensions reloaded')
+
+    # ── Notification toast ───────────────────────────────────────
+    def _show_toast(self, message: str, duration_ms: int = 3000):
+        """Show a transient notification toast at the bottom-right."""
+        toast = tk.Label(
+            self.root, text=f"  {message}  ",
+            bg='#313244', fg='#cdd6f4',
+            font=('Segoe UI', 10, 'bold'),
+            padx=16, pady=8, relief='solid', bd=1,
+        )
+        toast.place(relx=1.0, rely=1.0, anchor='se', x=-16, y=-16)
+        self.root.after(duration_ms, toast.destroy)
+
 
 def main():
+    # ── Logging setup ───────────────────────────────────────────────────
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     root = tk.Tk()
     app = CppEditorApp(root)
     root.minsize(640, 480)
-    root.mainloop()
+
+    # Safety net: ensure cleanup even on unexpected termination
+    def _atexit_cleanup():
+        if not app._closing:
+            log.warning("atexit: performing emergency cleanup")
+            if app.ext_manager:
+                try:
+                    app.ext_manager.shutdown_all()
+                except Exception:
+                    pass
+            app._save_geometry()
+
+    atexit.register(_atexit_cleanup)
+
+    # ── Ctrl+Z (SIGTSTP): shut down Tk window instead of suspending ──
+    if hasattr(signal, "SIGTSTP"):
+        def _handle_sigtstp(signum, frame):
+            log.info("Received SIGTSTP (Ctrl+Z) — shutting down gracefully")
+            # Kill any child subprocess (compile/run) immediately
+            proc = getattr(app, "current_process", None)
+            if proc is not None:
+                try:
+                    proc.kill()
+                    log.info("Killed child process (pid %d)", proc.pid)
+                except Exception:
+                    pass
+            # Schedule on_close on the Tk main thread
+            try:
+                root.after_idle(app.on_close)
+            except Exception:
+                # Tk already gone — force exit
+                os._exit(0)
+
+        signal.signal(signal.SIGTSTP, _handle_sigtstp)
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        log.info("Interrupted by user")
+        app.on_close()
 
 
 if __name__ == '__main__':
