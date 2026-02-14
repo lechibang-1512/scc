@@ -46,6 +46,7 @@ class BaseExtension:
         self._keybindings: Dict[str, str] = {}
         self._settings_cache: Dict[str, Any] = {}
         self._settings_loaded = False
+        self._settings_dirty = False
 
     # ── Lifecycle ────────────────────────────────────────────────────
     def activate(self, editor: Any) -> None:
@@ -115,12 +116,18 @@ class BaseExtension:
         return self._settings_cache.get(key, defaults.get(key))
 
     def set_setting(self, key: str, value: Any) -> None:
-        """Persist a setting value."""
+        """Update a setting value (deferred write — flushed on shutdown)."""
         if not self._settings_loaded:
             self._settings_cache = self._load_settings()
             self._settings_loaded = True
         self._settings_cache[key] = value
-        self._save_settings()
+        self._settings_dirty = True  # mark dirty, no disk write yet
+
+    def flush_settings(self) -> None:
+        """Write settings to disk only if they changed. Called on shutdown."""
+        if self._settings_dirty:
+            self._save_settings()
+            self._settings_dirty = False
 
     def _settings_path(self) -> Path:
         _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,6 @@
+import sys
+sys.dont_write_bytecode = True  # suppress __pycache__ writes (reduce SSD wear)
+
 import atexit
 import json
 import logging

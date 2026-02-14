@@ -128,12 +128,13 @@ class ExtensionManager:
                 self._state = {}
 
     def _save_state(self):
+        current = {name: info.enabled for name, info in self.extensions.items()}
+        # Skip write if state unchanged (reduce SSD wear)
+        if hasattr(self, '_last_saved_state') and current == self._last_saved_state:
+            return
         with open(STATE_FILE, "w") as f:
-            json.dump(
-                {name: info.enabled for name, info in self.extensions.items()},
-                f,
-                indent=2,
-            )
+            json.dump(current, f, indent=2)
+        self._last_saved_state = current
 
     def _rebuild_active(self):
         """Rebuild the pre-filtered list of active extensions."""
@@ -369,7 +370,13 @@ class ExtensionManager:
             # 1. deactivate if still active
             if info.enabled and info.instance:
                 self._deactivate(info)
-            # 2. on_shutdown hook
+            # 2. flush deferred settings to disk (batched writes)
+            if info.instance and hasattr(info.instance, 'flush_settings'):
+                try:
+                    info.instance.flush_settings()
+                except Exception:
+                    log.exception("flush_settings failed for %s", mod_name)
+            # 3. on_shutdown hook
             if info.instance:
                 try:
                     info.instance.on_shutdown(self.editor)

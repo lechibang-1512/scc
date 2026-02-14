@@ -30,3 +30,6 @@ dist/
 a.out
 *.out
 *.exe
+
+
+benchmark_results.json
